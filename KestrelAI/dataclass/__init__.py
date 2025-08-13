@@ -1,0 +1,1 @@
+"""Dataclasses for storing progress and information"""

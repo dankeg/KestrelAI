@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 from .base import LlmWrapper
 from memory.vector_store import MemoryStore
-from tasks import Task
+from dataclass.tasks import Task
 
 # --------------------------------------------------------------------------- #
 # 💬 Prompt fragments

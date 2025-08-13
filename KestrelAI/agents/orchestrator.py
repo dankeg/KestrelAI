@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from .base import LlmWrapper
-from tasks import Task
+from dataclass.tasks import Task
 
 ORCH_INSTRUCTIONS = """
 You are a project manager. Balance progress across tasks and avoid

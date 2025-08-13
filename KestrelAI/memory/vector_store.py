@@ -14,3 +14,10 @@ class MemoryStore:
     def search(self, query: str, k: int = 5):
         emb = self.model.encode(query).tolist()
         return self.collection.query(query_embeddings=[emb], n_results=k)
+    
+    def delete_all(self) -> None:
+        """Delete everything in this collection (but keep the collection)."""
+        self.collection.delete(where={})
+        name = self.collection.name
+        self.client.delete_collection(name)
+        self.collection = self.client.get_or_create_collection(name)

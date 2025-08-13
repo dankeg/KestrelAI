@@ -1,0 +1,78 @@
+version: "3.9"
+
+volumes:
+  ollama-models:
+
+services:
+  python:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    container_name: python-app
+    restart: unless-stopped
+    # Expose if your app serves HTTP; adjust/remove if not needed
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # If your app talks to Ollama, use this URL
+      - OLLAMA_BASE_URL=http://ollama:11434
+    # Change to your real entrypoint (e.g., uvicorn)
+    command: python app.py
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      # Change this to the model you want preloaded (e.g., mistral, llama3.1, qwen2.5:7b, etc.)
+      - OLLAMA_MODEL=llama3.1
+      # Keep models warm longer (prevents frequent unloads)
+      - OLLAMA_KEEP_ALIVE=24h
+      # Optional: move/keep models in a named volume
+      - OLLAMA_MODELS=/root/.ollama
+    volumes:
+      - ollama-models:/root/.ollama
+    # Start server, wait for readiness, then pull the model (idempotent), keep serving
+    command: >
+      bash -lc '
+        set -euo pipefail
+        ollama serve &
+        # wait for API to come up
+        until curl -sSf http://127.0.0.1:11434/api/tags >/dev/null; do sleep 1; done
+        # pre-pull model (no-op if already present)
+        ollama pull "${OLLAMA_MODEL}" || true
+        # stay attached to the server
+        wait -n
+      '
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Optional: if reverse-proxied, set to your public URL
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      # Point to the mounted settings file (default path shown)
+      - SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sfL", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s

@@ -1,0 +1,67 @@
+## FINAL REPORT: AI/ML Research Funding for Senior Undergraduates (US) - October 27, 2023
+
+**Executive Summary:**
+
+Securing direct, explicitly undergraduate-focused funding for AI/ML research in the United States is challenging. Opportunities primarily manifest as internships, research positions within larger programs, or access to resources rather than direct financial support. While major companies (Google, Microsoft, OpenAI, Anthropic, and Cohere) offer related opportunities, dedicated undergraduate grants are scarce. The University of Michigan/OpenAI MIDAS program exemplifies a valuable partnership model. A proactive, targeted approach involving direct company outreach, exploration of smaller AI startups, and investigation of philanthropic organizations is crucial.
+
+**Key Findings:**
+
+* **Limited Direct Funding:** Direct, explicitly undergraduate-focused grants for AI/ML research are uncommon.
+* **Dominance of Internships & Positions:** Opportunities primarily involve internships and research positions within larger programs, often with implicit funding (salary).
+* **MIDAS Model Significance:** The University of Michigan/OpenAI MIDAS program represents a successful collaborative research grant model to replicate.
+* **OpenAI Scholars Program Potential:** The OpenAI Scholars program is intriguing but details are scarce, warranting further investigation.
+* **Resource-Based Opportunities:** Access to computational resources (e.g., Google Cloud credits, OpenAI API access), mentorship, and datasets are valuable alternatives to direct funding.
+* **Smaller AI Startups:** Many smaller AI companies may offer unique research opportunities with more flexible funding models.
+* **Philanthropic Organizations:** Philanthropic organizations funding STEM education and research may offer relevant programs.
+* **AI Ethics & Societal Impact:** Funding opportunities focused on the ethical and societal implications of AI may be more receptive to undergraduate involvement.
+* **Open Source AI Projects:** Contributing to open-source AI projects may offer recognition and potential funding opportunities.
+
+**Supporting Evidence & Sources:**
+
+* **National Artificial Intelligence Research Institutes:** (https://www.ai.gov/research-institutes/) - A directory of institutes. Potential for affiliated research opportunities, but funding specifics vary significantly.
+* **Google AI:** (https://ai.google/research/student-opportunities/) - Primarily offers internships and research within Google AI teams. Funding is implicit (salary). The Google.org Accelerator: Generative AI open call (https://capital.google/accelerator/generative-ai/) could offer collaboration opportunities.
+* **NSF (National Science Foundation):** (https://www.nsf.gov/) - REU (Research Experiences for Undergraduates) programs require faculty sponsorship and a formal research proposal.
+* **Microsoft Research:** (https://www.microsoft.com/en-us/research/) - Offers internships and research within Microsoft Research teams.
+* **OpenAI:** Limited publicly advertised undergraduate-specific programs. The Researcher Access Program provides access to computational resources. Introducing NextGenAI (https://openai.com/blog/nextgenai/) highlights educational partnerships, potentially indicating future opportunities.
+* **Anthropic & Cohere:** Direct outreach to researchers or monitoring their careers pages is essential.
+* **University of Michigan / OpenAI MIDAS:** (https://www.research.umich.edu/midas/) – A collaborative research grant program.
+* **Spencer Initiative on AI and Education:** (https://spencerfoundation.org/ai-and-education/) – Potential for indirect funding or partnership opportunities.
+* **Generative AI Research Program:** (https://www.microsoft.com/en-us/research/generative-ai-research-program/) – Microsoft’s program may offer insights into potential student opportunities.
+
+
+
+**Technical Details:**
+
+* **NSF REU:** Requires a formal research proposal and faculty sponsorship.
+* **Google AI:**  Opportunities involve internships and research within Google AI teams.
+* **Microsoft Research:** Offers internships and research within Microsoft Research teams.
+* **OpenAI Researcher Access Program:** Provides access to computational resources.
+* **MIDAS Program:** Collaborative research grants between University of Michigan and OpenAI.
+* **OpenAI Scholars Program:** Details currently scarce; eligibility and pathways unknown.
+
+**Next Steps / Gaps:**
+
+1. **NSF REU Deep Dive:** Prioritize contacting faculty aligned with research interests to explore potential REU projects and understand proposal requirements.
+2. **Targeted Company Searches:** Refine search terms (e.g., "OpenAI undergraduate research grant," "Microsoft AI student scholarship," "Anthropic student research program").
+3. **LinkedIn Outreach - Targeted & Personalized:** Identify researchers at target companies and send introductory emails highlighting specific research interests and alignment with company work.
+4. **MIDAS Model Replication:** Research other universities and AI companies to identify potential for similar collaborative research grant programs.
+5. **OpenAI Scholars Program Investigation:** Attempt to contact OpenAI representatives to inquire about the Scholars program and potential pathways for undergraduates.
+6. **Smaller AI Startup Research:** Identify and research smaller AI startups and explore their potential for undergraduate research opportunities.
+7. **AI Ethics & Societal Impact Exploration:** Investigate funding opportunities focused on the ethical and societal implications of AI.
+8. **Open Source AI Project Contribution:** Consider contributing to open-source AI projects to gain recognition and potential funding.
+
+
+
+**Summary Table:**
+
+| Opportunity | Description | Eligibility | Deadline | Link |
+|---|---|---|---|---|
+| **NSF REU** | Research Experiences for Undergraduates | Requires faculty sponsorship | Varies by institution/project | https://www.nsf.gov/ |
+| **Google AI Internships/Research Positions** | Internships and research within Google AI teams | Varies by role | Rolling | https://ai.google/research/student-opportunities/ |
+| **Microsoft Research Internships/Positions** | Internships and research within Microsoft Research teams | Varies by role | Rolling | https://www.microsoft.com/en-us/research/ |
+| **OpenAI Researcher Access Program** | Provides access to computational resources | Varies | Ongoing | [https://openai.com/research/access](https://openai.com/research/access) |
+| **University of Michigan / OpenAI MIDAS** | Collaborative research grants | Likely requires affiliation with University of Michigan | Varies | https://www.research.umich.edu/midas/ |
+| **OpenAI Scholars Program** | (Details scarce - investigate) | Unknown | Unknown | N/A |
+| **Smaller AI Startups** | (Requires targeted search) | Varies | Varies | N/A |
+| **AI Ethics & Societal Impact Funding** | Funding for research on ethical and societal implications of AI | Varies | Varies | N/A |
+| **Open Source AI Project Contributions** | Contributions to open-source AI projects | Varies | Varies | N/A |

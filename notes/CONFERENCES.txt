@@ -1,0 +1,27 @@
+## FINAL REPORT: AI/ML Conference Opportunities and Faculty Recommendation Strategies
+
+This document summarizes current and past research progress on Artificial Intelligence/Machine Learning conferences, symposia, workshops, and student research programs, focusing on abstract submissions. It provides guidance on securing faculty recommendations, distilled from previous research and tailored to the needs of senior undergraduates. The document aims to provide a comprehensive resource for identifying suitable opportunities and maximizing the likelihood of acceptance and impactful participation.
+
+**AAI-26 Student Abstract and Poster Program**
+
+| Conference Name | Organizer/Society | Location & Event Dates | Scope/Topics | Submission Type | Abstract Length/Format | Eligibility | Important Dates (Timezone) | Review Model | Submission/CFP Link | Template/Guidelines Link | Student Registration Fee (if published) | Accepted Abstracts Published/Archived | Travel Support | Key Restrictions | Website Stability | Notes (Senior Undergrad Appeal) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| AAAI-26 Student Abstract and Poster Program | AAAI | Vancouver, BC, Canada; February 7-11, 2024 | All areas of AI; focus on preliminary research. | Poster | 250 words; PDF format. Clearly state research question, methods, and expected contributions. | Open to undergraduate and graduate students. **Senior undergraduates are eligible.** Must be currently enrolled. | Abstract Deadline: Sept 18, 2023 (Pacific Time); Notification: Oct 16, 2023 (Pacific Time); Poster Session: Feb 2024 | Single-blind (Program Chairs know authors; Reviewers do not) | [https://aaai.org/Conferences/AAAI-23/student-abstract-poster/](https://aaai.org/Conferences/AAAI-23/student-abstract-poster/) | [https://aaai.org/Conferences/AAAI-23/student-abstract-poster/](https://aaai.org/Conferences/AAAI-23/student-abstract-poster/) | Standard AAAI registration fee applies. Student registration: ~$400 USD (subject to change) | Accepted abstracts and poster summaries are published in the AAAI Conference Proceedings (PDF format). Indexed in Scopus and Web of Science. | Limited travel grants available through AAAI. Details on the AAAI website: [https://aaai.org/Conferences/AAAI-23/travel-funding/](https://aaai.org/Conferences/AAAI-23/travel-funding/) | Must be a student at time of submission and presentation. | Excellent | **Excellent opportunity for senior undergraduates to present initial research findings and receive feedback from leading researchers. Good networking potential.** |
+
+**NeurIPS Workshops (Ongoing Investigation)**
+
+| Conference Name | Organizer/Society | Location & Event Dates | Scope/Topics | Submission Type | Eligibility | Important Dates (Timezone) | Review Model | Submission/CFP Link | Notes (Senior Undergrad Appeal) |
+|---|---|---|---|---|---|---|---|---|
+| NeurIPS Workshops (Ongoing) | NeurIPS | Various Locations/Virtual | Broad range of ML topics. Search for workshops with introductory or student-focused themes. | Varies by workshop. | Varies by workshop. Often open to students. | Varies by workshop. | Varies by workshop. | [https://nips.cc/workshops](https://nips.cc/workshops) |  Identifying workshops specifically targeting undergraduates is ongoing. Search terms: “undergraduate,” “student,” “early career,” “introductory.” |
+
+**General Strategies for Faculty Recommendations:**
+
+*   **Early Engagement:** Begin building relationships with faculty early in your undergraduate career.
+*   **Demonstrate Interest:** Attend office hours, participate in research discussions, and show genuine enthusiasm for the field.
+*   **Proactive Communication:** Clearly communicate your goals and aspirations to potential recommenders.
+*   **Provide Materials:** Offer a comprehensive package of materials, including your CV, transcript, statement of purpose, and a draft of your abstract or poster.
+*   **Allow Sufficient Time:** Request recommendations well in advance of deadlines.
+
+
+
+The document aims to provide a comprehensive resource for identifying suitable opportunities and maximizing the likelihood of acceptance and impactful participation.

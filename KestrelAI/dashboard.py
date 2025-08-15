@@ -461,7 +461,8 @@ ML_TASK = """Find currently open grants, programs, fellowships, or funding oppor
 support AI/ML research and are available to senior undergraduate students in the
 United States. Include name, eligibility, what it funds, deadline, and link. Focus
 on fresh, prestigious, student-accessible opportunities not locked to one college.
-Include opportunities from companies like Google, Microsoft, Meta, OpenAI, Anthropic, Cohere."""
+Include opportunities from companies like Google, Microsoft, Meta, OpenAI, Anthropic, Cohere.
+The current date is August 2025, find programs open for application."""
 
 AI_CONFERENCES_CALL_FOR_ABSTRACTS_TASK = """Find AI/ML conferences, symposia, workshops, or student research programs that are currently accepting abstract submissions (not full-paper–only). For each opportunity, include: conference name, organizer/society, location & event dates, scope/topics, submission type (talk/poster/workshop) and abstract length/format, eligibility (explicitly note if senior undergraduates can submit), 
 important dates (abstract deadline with timezone, notification date, and any later full/extended-abstract deadline), review model (single/double-blind), submission/CFP link, template/guidelines link, student registration fee (if published), whether accepted abstracts are published/archived (e.g., proceedings/indexing), any travel support, and key restrictions.
@@ -621,119 +622,119 @@ def orchestration_loop():
             time.sleep(1)
             continue
             
-        try:
-            task = orch.tasks[orch.current]
+        
+        task = orch.tasks[orch.current]
+        
+        # Handle task switching
+        if state.current_task != task.name:
+            if state.current_task != "Initializing..." and state.current_task in state.task_history:
+                state.task_history[state.current_task]["status"] = "complete"
+                state.task_history[state.current_task]["end_time"] = time.time()
             
-            # Handle task switching
-            if state.current_task != task.name:
-                if state.current_task != "Initializing..." and state.current_task in state.task_history:
-                    state.task_history[state.current_task]["status"] = "complete"
-                    state.task_history[state.current_task]["end_time"] = time.time()
-                
-                state.current_task = task.name
-                state.task_start = time.time()
-                state.task_history[task.name]["status"] = "active"
-                if state.task_history[task.name]["start_time"] is None:
-                    state.task_history[task.name]["start_time"] = time.time()
-                
-                state.activity_log.append({
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "type": "task_start",
-                    "message": f"🦅 Started: {task.name.title()}"
-                })
-                state.last_update = time.time()
-
-            # Execute research step
-            notes = agent.run_step(task)
+            state.current_task = task.name
+            state.task_start = time.time()
+            state.task_history[task.name]["status"] = "active"
+            if state.task_history[task.name]["start_time"] is None:
+                state.task_history[task.name]["start_time"] = time.time()
             
-            if notes and len(notes) > 10:
-                state.latest_notes = notes
-                
-                # Store report in history
-                state.add_report(task.name, notes)
-                
-                # Get REAL metrics from agent
-                if hasattr(agent, 'get_global_metrics'):
-                    metrics = agent.get_global_metrics()
-                    state.total_llm_calls = metrics.get("total_llm_calls", 0)
-                    state.total_searches = metrics.get("total_searches", 0)
-                    state.total_summaries = metrics.get("total_summaries", 0)
-                    state.total_checkpoints = metrics.get("total_checkpoints", 0)
-                    state.total_web_fetches = metrics.get("total_web_fetches", 0)
-                
-                # Get task-specific metrics
-                if hasattr(agent, 'get_task_metrics'):
-                    task_metrics = agent.get_task_metrics(task.name)
-                    task_info = state.task_history[task.name]
-                    
-                    # Update with REAL data from agent
-                    task_info["searches"] = task_metrics.get("searches", [])
-                    task_info["search_count"] = task_metrics.get("search_count", 0)
-                    task_info["think_count"] = task_metrics.get("think_count", 0)
-                    task_info["summary_count"] = task_metrics.get("summary_count", 0)
-                    task_info["checkpoint_count"] = task_metrics.get("checkpoint_count", 0)
-                    task_info["action_count"] = task_metrics.get("action_count", 0)
-                    
-                    # Update search history with real search data
-                    for search_entry in task_metrics.get("search_history", []):
-                        if isinstance(search_entry, dict) and "query" in search_entry:
-                            if not any(s.get("query") == search_entry["query"] for s in state.search_history):
-                                state.search_history.append({
-                                    "time": datetime.now().strftime("%H:%M:%S"),
-                                    "task": task.name,
-                                    "query": search_entry["query"],
-                                    "results_count": search_entry.get("results_count", 0)
-                                })
-                
-                # Update common fields
-                elapsed = time.time() - state.task_start
-                progress = min(100, (elapsed / (task.budget_minutes * 60)) * 100)
-                
-                task_info = state.task_history[task.name]
-                task_info.update({
-                    "elapsed": elapsed,
-                    "progress": progress,
-                    "notes": notes[:1000],
-                    "last_action": datetime.now().strftime("%H:%M:%S")
-                })
-                
-                # Save notes
-                with open(f"notes/{task.name.upper()}.txt", "w", encoding="utf-8") as fh:
-                    fh.write(notes)
-                
-                # Log activity with emojis
-                if "[SEARCH]" in notes:
-                    message = "🔍 Searching for information"
-                elif "[THOUGHT]" in notes:
-                    message = "🤔 Analyzing findings"
-                elif "[SUMMARY]" in notes:
-                    message = "📝 Creating summary"
-                elif "[CHECKPOINT" in notes:
-                    message = "💾 Saving checkpoint"
-                else:
-                    message = "⚙️ Processing"
-                
-                state.activity_log.append({
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "type": "action",
-                    "message": message
-                })
-                
-                state.last_update = time.time()
-            
-            # Let orchestrator decide next
-            orch.next_action(task, notes)
-            time.sleep(0.5)
-            
-        except Exception as e:
-            print(f"Error in orchestration loop: {e}")
             state.activity_log.append({
                 "time": datetime.now().strftime("%H:%M:%S"),
-                "type": "error",
-                "message": f"❌ Error: {str(e)[:100]}"
+                "type": "task_start",
+                "message": f"🦅 Started: {task.name.title()}"
             })
             state.last_update = time.time()
-            time.sleep(2)
+
+        # Execute research step
+        notes = agent.run_step(task)
+        
+        if notes and len(notes) > 10:
+            state.latest_notes = notes
+            
+            # Store report in history
+            state.add_report(task.name, notes)
+            
+            # Get REAL metrics from agent
+            if hasattr(agent, 'get_global_metrics'):
+                metrics = agent.get_global_metrics()
+                state.total_llm_calls = metrics.get("total_llm_calls", 0)
+                state.total_searches = metrics.get("total_searches", 0)
+                state.total_summaries = metrics.get("total_summaries", 0)
+                state.total_checkpoints = metrics.get("total_checkpoints", 0)
+                state.total_web_fetches = metrics.get("total_web_fetches", 0)
+            
+            # Get task-specific metrics
+            if hasattr(agent, 'get_task_metrics'):
+                task_metrics = agent.get_task_metrics(task.name)
+                task_info = state.task_history[task.name]
+                
+                # Update with REAL data from agent
+                task_info["searches"] = task_metrics.get("searches", [])
+                task_info["search_count"] = task_metrics.get("search_count", 0)
+                task_info["think_count"] = task_metrics.get("think_count", 0)
+                task_info["summary_count"] = task_metrics.get("summary_count", 0)
+                task_info["checkpoint_count"] = task_metrics.get("checkpoint_count", 0)
+                task_info["action_count"] = task_metrics.get("action_count", 0)
+                
+                # Update search history with real search data
+                for search_entry in task_metrics.get("search_history", []):
+                    if isinstance(search_entry, dict) and "query" in search_entry:
+                        if not any(s.get("query") == search_entry["query"] for s in state.search_history):
+                            state.search_history.append({
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "task": task.name,
+                                "query": search_entry["query"],
+                                "results_count": search_entry.get("results_count", 0)
+                            })
+            
+            # Update common fields
+            elapsed = time.time() - state.task_start
+            progress = min(100, (elapsed / (task.budget_minutes * 60)) * 100)
+            
+            task_info = state.task_history[task.name]
+            task_info.update({
+                "elapsed": elapsed,
+                "progress": progress,
+                "notes": notes[:1000],
+                "last_action": datetime.now().strftime("%H:%M:%S")
+            })
+            
+            # Save notes
+            with open(f"notes/{task.name.upper()}.txt", "w", encoding="utf-8") as fh:
+                fh.write(notes)
+            
+            # Log activity with emojis
+            if "[SEARCH]" in notes:
+                message = "🔍 Searching for information"
+            elif "[THOUGHT]" in notes:
+                message = "🤔 Analyzing findings"
+            elif "[SUMMARY]" in notes:
+                message = "📝 Creating summary"
+            elif "[CHECKPOINT" in notes:
+                message = "💾 Saving checkpoint"
+            else:
+                message = "⚙️ Processing"
+            
+            state.activity_log.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "action",
+                "message": message
+            })
+            
+            state.last_update = time.time()
+        
+        # Let orchestrator decide next
+        orch.next_action(task, notes)
+        time.sleep(0.5)
+        
+    
+        # print(f"Error in orchestration loop: {e}")
+        # state.activity_log.append({
+        #     "time": datetime.now().strftime("%H:%M:%S"),
+        #     "type": "error",
+        #     "message": f"❌ Error: {str(e)[:100]}"
+        # })
+        state.last_update = time.time()
+        time.sleep(2)
 
 # Start background thread
 thread = threading.Thread(target=orchestration_loop, daemon=True, name="OrchestratorThread")

@@ -43,7 +43,7 @@ OUTPUT FORMAT (JSON only):
 
 ACTIONS:
 - think: Reason about findings and plan next steps
-- search: Targeted queries for new information
+- search: Targeted, human readable queries for new information
 - summarize: Checkpoint important findings"""
 
 _SUMMARY_SYS = """Create concise research notes from the provided material.

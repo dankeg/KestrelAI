@@ -2,77 +2,135 @@ version: "3.9"
 
 volumes:
   ollama-models:
+  redis-data:
+  node-modules:
+  searxng-cache:
 
 services:
-  python:
-    build:
-      context: ./python
-      dockerfile: Dockerfile
-    container_name: python-app
+  redis:
+    image: redis:7-alpine
+    container_name: kestrel-redis
     restart: unless-stopped
-    # Expose if your app serves HTTP; adjust/remove if not needed
-    ports:
-      - "8000:8000"
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+  backend:
+    build:
+      context: ./KestrelAI/backend
+      dockerfile: backend_dockerfile
+    container_name: kestrel-backend
+    restart: unless-stopped
+    working_dir: /app
+    ports: ["8000:8000"]
     environment:
       - PYTHONUNBUFFERED=1
-      # If your app talks to Ollama, use this URL
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379
       - OLLAMA_BASE_URL=http://ollama:11434
-    # Change to your real entrypoint (e.g., uvicorn)
-    command: python app.py
+      - SEARXNG_URL=http://searxng:8080
+    volumes:
+      - ./KestrelAI/backend:/app
+      - ./notes:/app/notes
+      - ./exports:/app/exports
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
-      ollama:
-        condition: service_healthy
+      redis: { condition: service_started }
+      ollama: { condition: service_started }
+      ollama-init: { condition: service_completed_successfully }
+
+  frontend:
+    build:
+      context: ./kestrel-ui
+      dockerfile: frontend_dockerfile
+    container_name: kestrel-frontend
+    restart: unless-stopped
+    working_dir: /app
+    ports: ["5173:5173"]
+    environment:
+      - REACT_APP_API_URL=http://backend:8000/api/v1
+      - NODE_ENV=development
+    volumes:
+      - ./kestrel-ui:/app
+      - node-modules:/app/node_modules
+    command: npm run dev -- --host 0.0.0.0
+    depends_on:
+      - backend
+
+  agent:
+    build:
+      context: ./KestrelAI
+      dockerfile: agent_dockerfile
+    container_name: kestrel-agent
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - SEARXNG_URL=http://searxng:8080
+      - MODEL_NAME=${MODEL_NAME:-llama3.1}
+      - OLLAMA_KEEP_ALIVE=24h
+    volumes:
+      - ./KestrelAI:/app
+      - ./notes:/app/notes
+    command: python -m model_loop
+    depends_on:
+      redis: { condition: service_started }
+      searxng: { condition: service_started }
+      ollama: { condition: service_started }
+      ollama-init: { condition: service_completed_successfully }
 
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
-    ports:
-      - "11434:11434"
+    ports: ["11434:11434"]
     environment:
-      # Change this to the model you want preloaded (e.g., mistral, llama3.1, qwen2.5:7b, etc.)
-      - OLLAMA_MODEL=llama3.1
-      # Keep models warm longer (prevents frequent unloads)
+      - OLLAMA_HOST=0.0.0.0:11434       # no scheme
       - OLLAMA_KEEP_ALIVE=24h
-      # Optional: move/keep models in a named volume
       - OLLAMA_MODELS=/root/.ollama
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_MAX_LOADED_MODELS=1
     volumes:
       - ollama-models:/root/.ollama
-    # Start server, wait for readiness, then pull the model (idempotent), keep serving
-    command: >
-      bash -lc '
-        set -euo pipefail
-        ollama serve &
-        # wait for API to come up
-        until curl -sSf http://127.0.0.1:11434/api/tags >/dev/null; do sleep 1; done
-        # pre-pull model (no-op if already present)
-        ollama pull "${OLLAMA_MODEL}" || true
-        # stay attached to the server
-        wait -n
-      '
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
+    command: ["serve"]
+
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama: { condition: service_started }
+    environment:
+      - OLLAMA_HOST=ollama:11434        # no scheme; used by the CLI
+      - MODEL_NAME=${MODEL_NAME:-llama3.1}
+    volumes:
+      - ollama-models:/root/.ollama
+    entrypoint: ["/bin/sh","-lc"]
+    command:
+      - >
+        until ollama list >/dev/null 2>&1; do sleep 1; done;
+        ollama pull ${MODEL_NAME} || true
+    restart: "no"
 
   searxng:
     image: searxng/searxng:latest
     container_name: searxng
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    ports: ["8080:8080"]
     environment:
-      # Optional: if reverse-proxied, set to your public URL
       - SEARXNG_BASE_URL=http://localhost:8080/
-      # Point to the mounted settings file (default path shown)
       - SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml
+      - SEARXNG_REDIS_URL=redis://redis:6379/0
+      - BIND_ADDRESS=0.0.0.0:8080
+      - FORCE_OWNERSHIP=true
     volumes:
-      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    healthcheck:
-      test: ["CMD", "curl", "-sfL", "http://127.0.0.1:8080/"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
+      - ./searxng:/etc/searxng
+      - searxng-cache:/var/cache/searxng
+    depends_on:
+      redis: { condition: service_started }
+
+networks:
+  default:
+    name: kestrel-network

@@ -38,7 +38,7 @@ from agents.orchestrator import Orchestrator
 from agents.base import LlmWrapper
 from agents.research_agents import ResearchAgent
 from memory.vector_store import MemoryStore
-from dataclass.tasks import Task
+from shared.models import Task
 
 # -----------------------------------------------------------------------------
 # Beautiful Kestrel-inspired CSS

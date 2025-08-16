@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 from .base import LlmWrapper
 from memory.vector_store import MemoryStore
-from dataclass.tasks import Task
+from shared.models import Task
 
 # --------------------------------------------------------------------------- #
 # 💬 Prompt fragments
@@ -189,6 +189,7 @@ class ResearchAgent:
         self.memory = memory
         self.llm = llm
         self._state: Dict[str, TaskState] = {}
+        self.scratchpad = []
         
         # Public metrics for dashboard access
         self.metrics = {
@@ -337,7 +338,7 @@ class ResearchAgent:
                 
                 notes = self._chat(
                     [{"role": "system", "content": _SUMMARY_SYS},
-                     {"role": "user", "content": f"Task: {task.user_prompt}\n\nMaterial:\n{material}"}]
+                     {"role": "user", "content": f"Task: {task.description}\n\nMaterial:\n{material}"}]
                 )
                 
                 # Track LLM call for summary
@@ -366,7 +367,7 @@ class ResearchAgent:
 
     def _build_context(self, task: Task, state: TaskState) -> str:
         """Build context with checkpoint + sliding window."""
-        context_parts = [f"Task: {task.user_prompt}"]
+        context_parts = [f"Task: {task.description}"]
         
         # Add last checkpoint if available
         if state.last_checkpoint:
@@ -395,7 +396,7 @@ class ResearchAgent:
         checkpoint = self._chat(
             [{"role": "system", "content": _CHECKPOINT_SYS},
              {"role": "user", "content": (
-                 f"Task: {task.user_prompt}\n\n"
+                 f"Task: {task.description}\n\n"
                  f"Recent research:\n{recent_context}\n\n"
                  f"Previous checkpoint:\n{state.last_checkpoint or 'None'}"
              )}]
@@ -427,7 +428,7 @@ class ResearchAgent:
         final_report = self._chat(
             [{"role": "system", "content": _FINAL_REPORT_SYS},
              {"role": "user", "content": (
-                 f"Task: {task.user_prompt}\n\n"
+                 f"Task: {task.description}\n\n"
                  f"Research checkpoints:\n{all_checkpoints}\n\n"
                  f"Additional findings:\n{rag_content}"
                  f"Instructions:\n{INSTRUCTIONS}"
@@ -454,13 +455,13 @@ class ResearchAgent:
         
         # Only add summaries and final reports to scratchpad
         if doc_type in ["summary", "final_report", "checkpoint"]:
-            task.scratchpad.append(f"[{doc_type.upper()}] {text[:500]}...")
+            self.scratchpad.append(f"[{doc_type.upper()}] {text[:500]}...")
 
     def _retrieve_from_rag(self, task: Task) -> str:
         """Retrieve relevant content from RAG for the task."""
         # This would ideally use semantic search, but for now we'll use the scratchpad
-        if task.scratchpad:
-            return "\n\n".join(task.scratchpad[-5:])  # Last 5 entries
+        if self.scratchpad:
+            return "\n\n".join(self.scratchpad[-5:])  # Last 5 entries
         return "(No previous findings)"
 
     def _searx_search(self, query: str) -> List[Dict]:

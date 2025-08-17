@@ -69,7 +69,7 @@ services:
       - PYTHONPATH=/app
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - SEARXNG_URL=http://searxng:8080
       - MODEL_NAME=${MODEL_NAME:-llama3.1}
       - OLLAMA_KEEP_ALIVE=24h

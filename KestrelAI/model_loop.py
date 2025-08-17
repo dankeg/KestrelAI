@@ -79,7 +79,8 @@ class KestrelRedisClient:
             "taskId": task_id,
             "type": activity_type,
             "message": message,
-            "timestamp": int(time.time() * 1000)
+            "timestamp": int(time.time() * 1000),
+            "time": str(int(time.time() * 1000))
         }
         self.redis.lpush("kestrel:queue:activities", json.dumps(activity))
 
@@ -434,7 +435,7 @@ class KestrelAgentWorker:
             self.orchestrator.next_action(task, notes)
             
             # Check if task is complete
-            if progress >= 100.0 or self.orchestrator.is_complete():
+            if progress >= 100.0:
                 self.stop_task()
     
     def extract_and_log_search(self, task_id: str, notes: str):

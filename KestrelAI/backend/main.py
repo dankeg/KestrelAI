@@ -278,7 +278,6 @@ async def get_task_from_redis(task_id: str) -> Optional[Task]:
         key = RedisKeys.TASK_STATE.format(task_id=task_id)
         task_data = await r.get(key)
         if task_data:
-            logger.error(f"Retrieved task {json.loads(task_data)} from Redis")
             return Task(**json.loads(task_data))
         return None
     except Exception as e:
@@ -305,41 +304,81 @@ async def save_task_to_redis(task: Task):
         logger.error(f"Failed to save task to Redis: {e}")
         return False
 
-async def process_task_updates():
-    """Background task to process updates from agent"""
+async def process_queues():
+    """Background task to consume all agent queues and update Redis state keys"""
     while True:
         try:
             r = await get_redis()
-            
-            # Process updates from agent
-            update_data = await r.brpop(RedisQueues.TASK_UPDATES, timeout=1)
-            if update_data:
-                _, data = update_data
-                logger.error(json.loads(data))
-                update = TaskUpdate(**json.loads(data))
-                
-                # Update task state
+
+            # Process status/progress updates
+            data = await r.brpop(RedisQueues.TASK_UPDATES, timeout=1)
+            if data:
+                _, raw = data
+                update = TaskUpdate(**json.loads(raw))
                 task = await get_task_from_redis(update.taskId)
                 if task:
                     if update.status:
-                        logger.error(f"Actual Content{update.status}")
                         task.status = update.status
                     if update.progress is not None:
                         task.progress = update.progress
                     if update.elapsed is not None:
                         task.elapsed = update.elapsed
                     if update.metrics:
-                        for key, value in update.metrics.items():
-                            if hasattr(task.metrics, key):
-                                setattr(task.metrics, key, value)
-                    
+                        for k, v in update.metrics.items():
+                            if hasattr(task.metrics, k): setattr(task.metrics, k, v)
                     task.updatedAt = int(datetime.now().timestamp() * 1000)
                     await save_task_to_redis(task)
-                    
+                    # Publish update event
+                    await r.publish(f"kestrel:task:{update.taskId}:updates",
+                                     json.dumps({"type": "status", "payload": update.dict()}))
                     logger.info(f"Processed update for task {update.taskId}")
-                    
+
+            # Process activity entries
+            data = await r.brpop(RedisQueues.TASK_ACTIVITIES, timeout=1)
+            if data:
+                _, raw = data
+                logger.error(json.loads(raw))
+                entry = ActivityEntry(**json.loads(raw))
+                key = RedisKeys.TASK_ACTIVITIES.format(task_id=entry.taskId)
+                await r.lpush(key, raw)
+                # Publish activity event
+                await r.publish(f"kestrel:task:{entry.taskId}:updates",
+                                 json.dumps({"type": "activity", "payload": entry.dict()}))
+
+            # Process search entries
+            data = await r.brpop(RedisQueues.TASK_SEARCHES, timeout=1)
+            if data:
+                _, raw = data
+                entry = SearchEntry(**json.loads(raw))
+                key = RedisKeys.TASK_SEARCHES.format(task_id=entry.taskId)
+                await r.lpush(key, raw)
+                # Publish search event
+                await r.publish(f"kestrel:task:{entry.taskId}:updates",
+                                 json.dumps({"type": "search", "payload": entry.dict()}))
+
+            # Process report entries
+            data = await r.brpop(RedisQueues.TASK_REPORTS, timeout=1)
+            if data:
+                _, raw = data
+                entry = Report(**json.loads(raw))
+                key = RedisKeys.TASK_REPORTS.format(task_id=entry.taskId)
+                await r.lpush(key, raw)
+                # Publish report event
+                await r.publish(f"kestrel:task:{entry.taskId}:updates",
+                                 json.dumps({"type": "report", "payload": entry.dict()}))
+
+            # Process metrics updates
+            data = await r.brpop(RedisQueues.TASK_METRICS, timeout=1)
+            if data:
+                _, raw = data
+                metrics = json.loads(raw)
+                key = RedisKeys.TASK_METRICS.format(task_id=metrics.get("taskId"))
+                await r.set(key, raw)
+                # Publish metrics event
+                await r.publish(f"kestrel:task:{metrics.get('taskId')}:updates",
+                                 json.dumps({"type": "metrics", "payload": metrics}))
         except Exception as e:
-            logger.error(f"Error processing updates: {e}")
+            logger.error(f"Error processing queues: {e}")
             await asyncio.sleep(1)
 
 # In-memory fallback storage (for when Redis is not available)
@@ -811,7 +850,7 @@ async def background_processor():
     while True:
         try:
             if REDIS_CLIENT:
-                await process_task_updates()
+                await process_queues()
         except Exception as e:
             logger.error(f"Background processor error: {e}")
         await asyncio.sleep(1)

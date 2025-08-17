@@ -19,8 +19,6 @@ import {
   Zap,
   Activity,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 // ==========================
 // API Configuration
@@ -281,6 +279,69 @@ const wsUrlForTask = (taskId: string) => {
   const base = API_BASE_URL.replace(/^http/i, "ws").replace(/\/api\/v1$/, "");
   return `${base}/ws/tasks/${taskId}`;
 };
+
+// ==========================
+// Markdown Renderer Component
+// ==========================
+function MarkdownRenderer({ content }: { content: string }) {
+  const renderMarkdown = (text: string) => {
+    // Basic markdown parsing
+    let html = text;
+    
+    // Headers
+    html = html.replace(/^### (.*?)$/gm, '<h3 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h3>');
+    html = html.replace(/^## (.*?)$/gm, '<h2 class="text-xl font-bold text-gray-900 mt-4 mb-2">$1</h2>');
+    html = html.replace(/^# (.*?)$/gm, '<h1 class="text-2xl font-bold text-gray-900 mt-4 mb-2">$1</h1>');
+    
+    // Bold and italic
+    html = html.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold">$1</strong>');
+    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    
+    // Links
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-amber-600 hover:text-amber-700 underline" target="_blank" rel="noopener noreferrer">$1</a>');
+    
+    // Lists
+    html = html.replace(/^- (.*?)$/gm, '<li class="ml-4 list-disc">$1</li>');
+    html = html.replace(/^(\d+)\. (.*?)$/gm, '<li class="ml-4 list-decimal">$2</li>');
+    
+    // Wrap consecutive list items in ul/ol tags
+    html = html.replace(/(<li class="ml-4 list-disc">.*?<\/li>\n?)+/gs, (match) => {
+      return `<ul class="my-2 space-y-1">${match}</ul>`;
+    });
+    html = html.replace(/(<li class="ml-4 list-decimal">.*?<\/li>\n?)+/gs, (match) => {
+      return `<ol class="my-2 space-y-1">${match}</ol>`;
+    });
+    
+    // Code blocks
+    html = html.replace(/```([\s\S]*?)```/g, '<pre class="bg-gray-100 p-3 rounded-lg overflow-x-auto my-2"><code>$1</code></pre>');
+    html = html.replace(/`([^`]+)`/g, '<code class="bg-gray-100 px-1 py-0.5 rounded text-sm">$1</code>');
+    
+    // Blockquotes
+    html = html.replace(/^> (.*?)$/gm, '<blockquote class="border-l-4 border-amber-400 pl-4 my-2 text-gray-700">$1</blockquote>');
+    
+    // Horizontal rules
+    html = html.replace(/^---$/gm, '<hr class="my-4 border-t border-gray-300">');
+    
+    // Paragraphs
+    html = html.replace(/\n\n/g, '</p><p class="mb-3">');
+    html = '<p class="mb-3">' + html + '</p>';
+    
+    // Clean up empty paragraphs
+    html = html.replace(/<p class="mb-3"><\/p>/g, '');
+    html = html.replace(/<p class="mb-3">(<[^p])/g, '$1');
+    html = html.replace(/(<\/[^p][^>]*>)<\/p>/g, '$1');
+    
+    return html;
+  };
+
+  return (
+    <div 
+      className="prose prose-sm max-w-none text-gray-700"
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+    />
+  );
+}
 
 // ==========================
 // Hooks: Task Manager
@@ -587,13 +648,29 @@ function useReports(taskId: string | null) {
             taskId: taskId!,
             timestamp: Date.now(),
             title: "Research Summary",
-            content: `### 📝 Research Summary
+            content: `# Research Summary
 
-This is a placeholder report.
+## Key Findings
 
-- supports **bold**, _italics_
-- tables, lists, and more via GFM
-`,
+This is a **placeholder report** with *markdown* formatting.
+
+### Important Points
+- First finding with **bold text**
+- Second finding with *italic text*
+- Third finding with a [link](https://example.com)
+
+### Code Example
+\`\`\`python
+def example():
+    return "Hello World"
+\`\`\`
+
+> This is a blockquote with important information
+
+---
+
+### Conclusion
+The research has uncovered several important insights that will guide our next steps.`,
             format: "markdown",
           },
         ]);
@@ -825,70 +902,6 @@ function TaskItem({
 }
 
 // ==========================
-// Markdown/HTML/Text Renderer for Reports
-// ==========================
-function ReportRenderer({ report }: { report?: Report }) {
-  if (!report) return null;
-  const fmt = report.format ?? "markdown";
-
-  if (fmt === "markdown") {
-    return (
-      <ReactMarkdown remarkPlugins={[remarkGfm]} className="prose prose-sm max-w-none">
-        {report.content ?? ""}
-      </ReactMarkdown>
-    );
-  }
-
-  if (fmt === "html") {
-    // If your reports can contain untrusted HTML, consider sanitizing here.
-    return (
-      <div
-        className="prose prose-sm max-w-none"
-        dangerouslySetInnerHTML={{ __html: report.content ?? "" }}
-      />
-    );
-  }
-
-  // Plain text fallback
-  return <pre className="whitespace-pre-wrap text-gray-700 text-sm">{report.content ?? ""}</pre>;
-}
-
-// ==========================
-// Pager (controlled)
-// ==========================
-function Pager({
-  total,
-  index,
-  onChange,
-}: {
-  total: number;
-  index: number;
-  onChange: (i: number) => void;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        onClick={() => onChange(Math.max(0, index - 1))}
-        disabled={index === 0}
-        className="p-1 hover:bg-amber-100 rounded disabled:opacity-50"
-      >
-        <ChevronLeft className="w-4 h-4" />
-      </button>
-      <span className="text-sm text-gray-600 px-2">
-        {index + 1} / {total}
-      </span>
-      <button
-        onClick={() => onChange(Math.min(total - 1, index + 1))}
-        disabled={index === total - 1}
-        className="p-1 hover:bg-amber-100 rounded disabled:opacity-50"
-      >
-        <ChevronRight className="w-4 h-4" />
-      </button>
-    </div>
-  );
-}
-
-// ==========================
 // Task Configuration View
 // ==========================
 function TaskConfiguration({
@@ -1066,24 +1079,17 @@ function TaskDashboard({
   onUpdate: (id: string, updates: Partial<Task>) => void;
 }) {
   const [isPaused, setIsPaused] = useState(task.status === "paused");
+  const [currentReportIndex, setCurrentReportIndex] = useState(0);
 
   const { activity, appendActivity } = useTaskActivity(task.id);
   const { searches, appendSearch } = useSearchHistory(task.id);
   const { reports, appendReport } = useReports(task.id);
   const { metrics, setMetrics } = useMetrics(task.id);
 
-  // Currently selected report page (0-based)
-  const [reportIndex, setReportIndex] = useState(0);
-
-  // Keep index valid when reports change
+  // Reset report index when reports change
   useEffect(() => {
-    setReportIndex((i) => Math.min(i, Math.max(0, reports.length - 1)));
+    setCurrentReportIndex(0);
   }, [reports.length]);
-
-  // Reset to first page when switching tasks
-  useEffect(() => {
-    setReportIndex(0);
-  }, [task.id]);
 
   // Realtime wiring
   useTaskRealtime(task, {
@@ -1100,7 +1106,11 @@ function TaskDashboard({
     },
     onActivity: appendActivity,
     onSearch: appendSearch,
-    onReport: appendReport,
+    onReport: (report) => {
+      appendReport(report);
+      // Reset to first report when new report arrives
+      setCurrentReportIndex(0);
+    },
     onMetrics: setMetrics,
   });
 
@@ -1141,6 +1151,8 @@ function TaskDashboard({
       alert("Failed to export task. Please try again.");
     }
   };
+
+  const currentReport = reports[currentReportIndex];
 
   return (
     <div className="flex-1 overflow-y-auto bg-gradient-to-br from-amber-50/50 via-white to-orange-50/50">
@@ -1372,13 +1384,39 @@ function TaskDashboard({
             <div className="p-4 border-b border-amber-100 bg-gradient-to-r from-amber-50 to-orange-50">
               <div className="flex items-center justify-between">
                 <h3 className="font-bold text-gray-900">
-                  {reports[reportIndex]?.title || "Research Report"}
+                  {currentReport?.title || "Research Report"}
                 </h3>
-                <Pager total={reports.length} index={reportIndex} onChange={setReportIndex} />
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCurrentReportIndex((i) => Math.max(0, i - 1))}
+                    disabled={currentReportIndex === 0}
+                    className="p-1 hover:bg-amber-100 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4 text-amber-700" />
+                  </button>
+                  <span className="text-sm text-gray-600 px-2 min-w-[60px] text-center">
+                    {currentReportIndex + 1} / {reports.length}
+                  </span>
+                  <button
+                    onClick={() => setCurrentReportIndex((i) => Math.min(reports.length - 1, i + 1))}
+                    disabled={currentReportIndex === reports.length - 1}
+                    className="p-1 hover:bg-amber-100 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ChevronRight className="w-4 h-4 text-amber-700" />
+                  </button>
+                </div>
               </div>
             </div>
             <div className="p-6 max-h-96 overflow-y-auto">
-              <ReportRenderer report={reports[reportIndex]} />
+              {currentReport && (
+                currentReport.format === "markdown" ? (
+                  <MarkdownRenderer content={currentReport.content} />
+                ) : (
+                  <div className="whitespace-pre-wrap text-gray-700 text-sm">
+                    {currentReport.content}
+                  </div>
+                )
+              )}
             </div>
           </div>
         )}

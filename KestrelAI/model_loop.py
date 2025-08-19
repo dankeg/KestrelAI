@@ -99,7 +99,7 @@ class KestrelRedisClient:
 
     def send_search(self, task_id: str, query: str, results: int, sources: List[str]):
         payload = {"taskId": task_id, "query": query, "results": results, "sources": sources,
-                   "timestamp": int(time.time() * 1000)}
+                   "timestamp": int(time.time() * 1000), "time": str(time.time() * 1000)}
         self.redis.lpush("kestrel:queue:searches", json.dumps(payload))
 
 # -----------------------------------------------------------------------------
@@ -427,6 +427,16 @@ class KestrelAgentWorker:
                 elapsed=int(elapsed),
                 metrics=metrics_update
             )
+
+            logger.info(f"Searches {agent_task_metrics['searches']}")
+            # Send search history to Redis
+            for query in agent_task_metrics["searches"]:
+                self.redis_client.send_search(
+                    task_id,
+                    query,
+                    results=0,
+                    sources=["agent_search"]
+                )
             
             # Save notes to file and send as report
             safe_name = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in task.name).strip()

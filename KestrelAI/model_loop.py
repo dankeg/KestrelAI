@@ -356,6 +356,19 @@ class KestrelAgentWorker:
         
         # Execute research step
         notes = self.agent.run_step(task)
+
+        # Update local metrics with agent's actual values
+        agent_task_metrics = self.agent.get_task_metrics(task.name)
+        self.task_metrics[task_id].update({
+            "search_count": agent_task_metrics["search_count"],
+            "think_count": agent_task_metrics["think_count"],
+            "summary_count": agent_task_metrics["summary_count"],
+            "checkpoint_count": agent_task_metrics["checkpoint_count"],
+            "action_count": agent_task_metrics["action_count"],
+            "searches": agent_task_metrics["searches"],
+            "search_history": agent_task_metrics["search_history"],
+            "current_focus": agent_task_metrics["current_focus"]
+        })
         
         if notes and len(notes) > 10:
             # Parse notes for activity type
@@ -405,6 +418,7 @@ class KestrelAgentWorker:
                 "checkpointCount": self.task_metrics[task_id]["checkpoint_count"],
                 "llmTokensUsed": self.global_metrics.get("total_llm_calls", 0) * 1000  # Estimate
             }
+            logger.error(f"Current task Metrics{ self.task_metrics}")
             
             self.redis_client.send_update(
                 task_id,

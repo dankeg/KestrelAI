@@ -19,6 +19,8 @@ import {
   Zap,
   Activity,
 } from "lucide-react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // ==========================
 // API Configuration
@@ -283,65 +285,86 @@ const wsUrlForTask = (taskId: string) => {
 // ==========================
 // Markdown Renderer Component
 // ==========================
-function MarkdownRenderer({ content }: { content: string }) {
-  const renderMarkdown = (text: string) => {
-    // Basic markdown parsing
-    let html = text;
-    
-    // Headers
-    html = html.replace(/^### (.*?)$/gm, '<h3 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h3>');
-    html = html.replace(/^## (.*?)$/gm, '<h2 class="text-xl font-bold text-gray-900 mt-4 mb-2">$1</h2>');
-    html = html.replace(/^# (.*?)$/gm, '<h1 class="text-2xl font-bold text-gray-900 mt-4 mb-2">$1</h1>');
-    
-    // Bold and italic
-    html = html.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
-    html = html.replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold">$1</strong>');
-    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-    
-    // Links
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-amber-600 hover:text-amber-700 underline" target="_blank" rel="noopener noreferrer">$1</a>');
-    
-    // Lists
-    html = html.replace(/^- (.*?)$/gm, '<li class="ml-4 list-disc">$1</li>');
-    html = html.replace(/^(\d+)\. (.*?)$/gm, '<li class="ml-4 list-decimal">$2</li>');
-    
-    // Wrap consecutive list items in ul/ol tags
-    html = html.replace(/(<li class="ml-4 list-disc">.*?<\/li>\n?)+/gs, (match) => {
-      return `<ul class="my-2 space-y-1">${match}</ul>`;
-    });
-    html = html.replace(/(<li class="ml-4 list-decimal">.*?<\/li>\n?)+/gs, (match) => {
-      return `<ol class="my-2 space-y-1">${match}</ol>`;
-    });
-    
-    // Code blocks
-    html = html.replace(/```([\s\S]*?)```/g, '<pre class="bg-gray-100 p-3 rounded-lg overflow-x-auto my-2"><code>$1</code></pre>');
-    html = html.replace(/`([^`]+)`/g, '<code class="bg-gray-100 px-1 py-0.5 rounded text-sm">$1</code>');
-    
-    // Blockquotes
-    html = html.replace(/^> (.*?)$/gm, '<blockquote class="border-l-4 border-amber-400 pl-4 my-2 text-gray-700">$1</blockquote>');
-    
-    // Horizontal rules
-    html = html.replace(/^---$/gm, '<hr class="my-4 border-t border-gray-300">');
-    
-    // Paragraphs
-    html = html.replace(/\n\n/g, '</p><p class="mb-3">');
-    html = '<p class="mb-3">' + html + '</p>';
-    
-    // Clean up empty paragraphs
-    html = html.replace(/<p class="mb-3"><\/p>/g, '');
-    html = html.replace(/<p class="mb-3">(<[^p])/g, '$1');
-    html = html.replace(/(<\/[^p][^>]*>)<\/p>/g, '$1');
-    
-    return html;
-  };
+const mdComponents: Components = {
+  h1: ({ node, ...props }) => (
+    <h1 className="text-2xl font-bold text-gray-900 mt-4 mb-2" {...props} />
+  ),
+  h2: ({ node, ...props }) => (
+    <h2 className="text-xl font-bold text-gray-900 mt-4 mb-2" {...props} />
+  ),
+  h3: ({ node, ...props }) => (
+    <h3 className="text-lg font-bold text-gray-900 mt-4 mb-2" {...props} />
+  ),
+  p: ({ node, ...props }) => <p className="mb-3" {...props} />,
 
-  return (
-    <div 
-      className="prose prose-sm max-w-none text-gray-700"
-      dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+  // Open links in a new tab (replacement for removed linkTarget)
+  a: ({ node, ...props }) => (
+    <a
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-amber-600 hover:text-amber-700 underline"
+      {...props}
     />
+  ),
+
+  ul: ({ node, ...props }) => (
+    <ul className="my-2 space-y-1 list-disc ml-6" {...props} />
+  ),
+  ol: ({ node, ...props }) => (
+    <ol className="my-2 space-y-1 list-decimal ml-6" {...props} />
+  ),
+  li: ({ node, ...props }) => <li className="marker:text-gray-600" {...props} />,
+  blockquote: ({ node, ...props }) => (
+    <blockquote
+      className="border-l-4 border-amber-400 pl-4 my-2 text-gray-700"
+      {...props}
+    />
+  ),
+  hr: ({ node, ...props }) => (
+    <hr className="my-4 border-t border-gray-300" {...props} />
+  ),
+
+  // Properly typed `code` with `inline`
+  code({ inline, className, children, ...props }) {
+    return inline ? (
+      <code className="bg-gray-100 px-1 py-0.5 rounded text-sm" {...props}>
+        {children}
+      </code>
+    ) : (
+      <pre className="bg-gray-100 p-3 rounded-lg overflow-x-auto my-2">
+        <code className={className} {...props}>
+          {children}
+        </code>
+      </pre>
+    );
+  },
+
+  // GFM tables
+  table: ({ node, ...props }) => (
+    <div className="overflow-x-auto my-3">
+      <table className="min-w-full border-collapse" {...props} />
+    </div>
+  ),
+  thead: ({ node, ...props }) => <thead className="bg-gray-50" {...props} />,
+  th: ({ node, ...props }) => (
+    <th className="border px-3 py-1 text-left font-semibold" {...props} />
+  ),
+  td: ({ node, ...props }) => (
+    <td className="border px-3 py-1 align-top" {...props} />
+  ),
+  tr: ({ node, ...props }) => <tr className="even:bg-gray-50" {...props} />,
+};
+
+function MarkdownRenderer({ content }: { content: string }) {
+  return (
+    <div className="prose prose-sm max-w-none text-gray-700">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+        {content}
+      </ReactMarkdown>
+    </div>
   );
 }
+
 
 // ==========================
 // Hooks: Task Manager

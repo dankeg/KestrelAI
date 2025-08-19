@@ -304,16 +304,14 @@ async def save_task_to_redis(task: Task):
         logger.error(f"Failed to save task to Redis: {e}")
         return False
 
+
 async def process_queues():
     """Background task to consume all agent queues and update Redis state keys"""
     while True:
         try:
             r = await get_redis()
-
-            # Process status/progress updates
-            data = await r.brpop(RedisQueues.TASK_UPDATES, timeout=1)
-            if data:
-                _, raw = data
+            raw = await r.rpop(RedisQueues.TASK_UPDATES)
+            if raw:
                 update = TaskUpdate(**json.loads(raw))
                 task = await get_task_from_redis(update.taskId)
                 if task:
@@ -325,7 +323,8 @@ async def process_queues():
                         task.elapsed = update.elapsed
                     if update.metrics:
                         for k, v in update.metrics.items():
-                            if hasattr(task.metrics, k): setattr(task.metrics, k, v)
+                            if hasattr(task.metrics, k): 
+                                setattr(task.metrics, k, v)
                     task.updatedAt = int(datetime.now().timestamp() * 1000)
                     await save_task_to_redis(task)
                     # Publish update event
@@ -334,49 +333,56 @@ async def process_queues():
                     logger.info(f"Processed update for task {update.taskId}")
 
             # Process activity entries
-            data = await r.brpop(RedisQueues.TASK_ACTIVITIES, timeout=1)
-            if data:
-                _, raw = data
-                logger.error(json.loads(raw))
+            raw = await r.rpop(RedisQueues.TASK_ACTIVITIES)
+            if raw:
+                # Remove the erroneous logger.error line
                 entry = ActivityEntry(**json.loads(raw))
                 key = RedisKeys.TASK_ACTIVITIES.format(task_id=entry.taskId)
                 await r.lpush(key, raw)
                 # Publish activity event
                 await r.publish(f"kestrel:task:{entry.taskId}:updates",
                                  json.dumps({"type": "activity", "payload": entry.dict()}))
+                logger.info(f"Processed activity for task {entry.taskId}")
 
             # Process search entries
-            data = await r.brpop(RedisQueues.TASK_SEARCHES, timeout=1)
-            if data:
-                _, raw = data
+            raw = await r.rpop(RedisQueues.TASK_SEARCHES)
+            if raw:
+                logging.error(f"Raw search entry: {raw}")  # Debugging line
                 entry = SearchEntry(**json.loads(raw))
                 key = RedisKeys.TASK_SEARCHES.format(task_id=entry.taskId)
                 await r.lpush(key, raw)
                 # Publish search event
                 await r.publish(f"kestrel:task:{entry.taskId}:updates",
                                  json.dumps({"type": "search", "payload": entry.dict()}))
+                logger.info(f"Processed search for task {entry.taskId}: {entry.query}")
 
             # Process report entries
-            data = await r.brpop(RedisQueues.TASK_REPORTS, timeout=1)
-            if data:
-                _, raw = data
+            raw = await r.rpop(RedisQueues.TASK_REPORTS)
+            if raw:
                 entry = Report(**json.loads(raw))
                 key = RedisKeys.TASK_REPORTS.format(task_id=entry.taskId)
                 await r.lpush(key, raw)
                 # Publish report event
                 await r.publish(f"kestrel:task:{entry.taskId}:updates",
                                  json.dumps({"type": "report", "payload": entry.dict()}))
+                logger.info(f"Processed report for task {entry.taskId}")
 
             # Process metrics updates
-            data = await r.brpop(RedisQueues.TASK_METRICS, timeout=1)
-            if data:
-                _, raw = data
+            raw = await r.rpop(RedisQueues.TASK_METRICS)
+            if raw:
                 metrics = json.loads(raw)
-                key = RedisKeys.TASK_METRICS.format(task_id=metrics.get("taskId"))
-                await r.set(key, raw)
-                # Publish metrics event
-                await r.publish(f"kestrel:task:{metrics.get('taskId')}:updates",
-                                 json.dumps({"type": "metrics", "payload": metrics}))
+                task_id = metrics.get("taskId")
+                if task_id:
+                    key = RedisKeys.TASK_METRICS.format(task_id=task_id)
+                    await r.set(key, raw)
+                    # Publish metrics event
+                    await r.publish(f"kestrel:task:{task_id}:updates",
+                                     json.dumps({"type": "metrics", "payload": metrics}))
+                    logger.info(f"Processed metrics for task {task_id}")
+            
+            # Short sleep to prevent CPU spinning
+            await asyncio.sleep(0.1)
+            
         except Exception as e:
             logger.error(f"Error processing queues: {e}")
             await asyncio.sleep(1)
@@ -482,7 +488,12 @@ async def update_task(task_id: str, updates: Dict[str, Any]):
     # Update task fields
     for field, value in updates.items():
         if hasattr(task, field) and field not in ["id", "createdAt"]:
-            setattr(task, field, value)
+            if field == "metrics" and isinstance(value, dict):
+                task.metrics = TaskMetrics(**value)
+                logger.error(task.metrics)
+                logger.error(f"Pre-existing Values: {task.metrics}")
+            else:
+                setattr(task, field, value)
     
     task.updatedAt = int(datetime.now().timestamp() * 1000)
     
@@ -733,13 +744,13 @@ async def get_task_metrics(task_id: str):
     
     # Return mock metrics
     return SystemMetrics(
-        llmCalls=42,
-        searches=15,
-        pagesAnalyzed=73,
-        summaries=8,
-        checkpoints=3,
-        tokensUsed=15000,
-        estimatedCost=0.45
+        llmCalls=0,
+        searches=0,
+        pagesAnalyzed=0,
+        summaries=0,
+        checkpoints=0,
+        tokensUsed=0,
+        estimatedCost=0.0
     )
 
 @app.get("/api/v1/tasks/{task_id}/export")
@@ -829,7 +840,10 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                 
                 async for message in pubsub.listen():
                     if message['type'] == 'message':
-                        await websocket.send_text(message['data'])
+                        data = message["data"]
+                        if isinstance(data, bytes):
+                            data = data.decode("utf-8", errors="ignore")
+                        await websocket.send_text(data)
             except:
                 # Fallback: send periodic updates
                 task = tasks_memory.get(task_id)

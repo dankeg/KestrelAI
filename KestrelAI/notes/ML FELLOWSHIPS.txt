@@ -1,0 +1,54 @@
+## FINAL REPORT: AI/ML Research Funding Opportunities (August 2025) - Senior Undergraduates
+
+**1. Executive Summary**
+
+This report consolidates research findings on currently open AI/ML research funding opportunities accessible to senior undergraduate students in the United States as of August 2025. Opportunities identified include the Google Student Researcher Program, Microsoft Undergraduate Research Internships, the CRA-Microsoft Fellowship, and various avenues for exploring opportunities with smaller AI startups, contributing to open-source projects, and pursuing AI for social good. The report provides detailed information on application deadlines, eligibility requirements, and potential strategies for maximizing success.
+
+**2. Key Players and Opportunities**
+
+*   **Meta AI:** Actively recruiting Research Scientist Interns for 2025. Emphasis on research projects, with a focus on areas like generative AI, large language models, and responsible AI. Applications are highly competitive.
+*   **OpenAI:** While direct undergraduate research positions are limited, opportunities may arise through contributing to open-source projects or contacting researchers directly.
+*   **Google:** The Google Student Researcher Program offers a structured research experience under the mentorship of Google scientists. Applications are competitive and require a strong academic record and research experience. The Google AI Residency program is also an option for those seeking a more intensive research experience.
+*   **Microsoft:** Microsoft Undergraduate Research Internships provide opportunities to work on cutting-edge research projects within Microsoft Research. The CRA-Microsoft Fellowship supports undergraduate research in computer science, with a focus on innovation and impact.
+*   **Anthropic:** Similar to OpenAI, direct undergraduate positions are scarce. Focus on contributing to open-source projects and networking with researchers.
+*   **Cohere:** Opportunities are primarily through direct outreach to researchers. Regularly monitor the Cohere blog ([https://blog.cohere.com/](https://blog.cohere.com/)) and publications ([https://www.cohere.com/research](https://www.cohere.com/research)) for names and contact information. Create a spreadsheet to track outreach efforts. Focus on specific research teams within Cohere (e.g., those working on retrieval-augmented generation, vector databases, or specific language models) and target outreach accordingly. Craft a template email referencing specific publications or projects of the researchers they contact to demonstrate genuine interest. Consider sending a LinkedIn connection request before an email to increase response rates.
+
+**3. Funding Opportunities Table**
+
+| Program Name | Description | Deadline (Approximate) | Eligibility | Website | Notes |
+|---|---|---|---|---|---|
+| Google Student Researcher Program | Structured research experience under Google scientists. | Varies; typically Fall/Winter | Strong academic record, research experience | [https://research.google/students/](https://research.google/students/) | Highly competitive. |
+| Microsoft Undergraduate Research Internship | Research projects within Microsoft Research. | Varies; typically Fall/Winter | Strong academic record, research experience | [https://careers.microsoft.com/students/us/en/internships](https://careers.microsoft.com/students/us/en/internships) | Competitive. |
+| CRA-Microsoft Fellowship | Supports undergraduate research in computer science. | Typically Spring | Strong academic record, research proposal | [https://cra.org/cra-microsoft-fellowship/](https://cra.org/cra-microsoft-fellowship/) | Focus on innovation and impact. |
+| Vector Applied Internships | Focuses on applied AI and machine learning. | Varies | Strong technical skills | [https://vector.dev/internships](https://vector.dev/internships) | Growing opportunity. |
+| Horizon Fellowship | Supports innovative research projects. | Varies | Open to diverse backgrounds | [https://www.horizonfellowship.org/](https://www.horizonfellowship.org/) | Newer program, potentially less competition. |
+| Google AI Residency | Intensive research experience | Varies | Strong technical skills, passion for AI | [https://ai.google/research/residency/](https://ai.google/research/residency/) | Very competitive |
+
+**4. Unexplored Areas & Strategies**
+
+*   **AI for Social Good:** Explore opportunities with organizations like AI4Good, DataKind, and AI for Social Impact at universities.
+*   **Open Source AI Projects:** Contribute to projects like Hugging Face, PyTorch, and TensorFlow to gain experience and network.
+*   **Shadowing Opportunities:** Explore the possibility of shadowing researchers at companies or universities.
+*   **Smaller AI Startups:** Target smaller companies that may be more open to undergraduate involvement.
+*   **Networking:** Attend virtual events, connect with researchers on LinkedIn, and reach out to alumni.
+
+**5. Diversity & Inclusion Resources**
+
+*   **AnitaB.org:** Scholarships and mentorship programs for women in computing. [https://anitab.org/](https://anitab.org/)
+*   **Grace Hopper Celebration:** Largest gathering of women in computing. [https://www.gracehopper.com/](https://www.gracehopper.com/)
+*   **Society of Hispanic Professional Engineers (SHPE):** Resources and opportunities for Hispanic students in STEM. [https://www.shpe.org/](https://www.shpe.org/)
+*   **National Society of Black Engineers (NSBE):** Resources and opportunities for Black students in engineering and technology. [https://www.nsbe.org/](https://www.nsbe.org/)
+
+**6. Important Disclaimers**
+
+*   **Deadlines are Estimates:** Dates provided are based on previous years' timelines and are subject to change. *Always verify deadlines directly on the program websites.*
+*   **Eligibility Requirements:** Carefully review eligibility criteria before applying.
+*   **Link Rot:** Website links may become outdated. *Use a link checker or search for archived versions of pages if links are broken.*
+*   **Competition:** These opportunities are highly competitive. A strong academic record, research experience, and compelling application are essential.
+*   **Program Availability:** Not all programs may be offered every year.
+*   **Tailoring Applications:** Emphasize the importance of tailoring applications to each specific program, highlighting how the student's skills and interests align with the program's goals.
+*   **Networking is Key:** Reinforce the idea that networking is often more important than just submitting applications.
+
+
+
+This information is for guidance only and does not guarantee acceptance into any program.

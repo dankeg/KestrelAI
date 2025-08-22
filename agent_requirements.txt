@@ -1,0 +1,16 @@
+# Core LLM interface
+ollama==0.1.8          # Python client for the local Ollama daemon
+numpy>=1.24,<2
+
+# Retrieval-augmented memory
+chromadb==0.4.24
+sentence-transformers==2.5.1
+
+# Lightweight web search
+duckduckgo-search==3.9.6
+
+# Utilities
+python-dotenv==1.0.1
+tqdm==4.66.4
+redis==5.0.1
+beautifulsoup4==4.13.4

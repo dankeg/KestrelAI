@@ -1,0 +1,56 @@
+## FINAL REPORT: AI/ML Conference & Student Research Opportunity Landscape (Open as of October 27, 2023)
+
+This report summarizes currently open calls for abstract submissions at AI/ML conferences, symposia, workshops, and student programs, aiming to prevent redundant research and establish a baseline for future exploration. It incorporates findings from prior reports and ongoing investigations. The information provided is current as of October 27, 2023.
+
+**1. AAAI-26 Student Abstract and Poster Submission:**
+
+*   **Organizer:** Association for the Advancement of Artificial Intelligence (AAAI)
+*   **Location & Dates:** Vancouver, Canada, February 27 - March 1, 2024
+*   **Scope/Topics:** All areas of AI
+*   **Eligibility:** Students (undergraduate, Masters, PhD)
+*   **Important Dates:** Abstract Submission Deadline: November 17, 5:00 PM PST
+*   **Review Model:** Double-blind peer review
+*   **Submission/CFP Link:** [https://aaai.org/Conferences/AAAI/AAAI24/student-abstract-poster/](https://aaai.org/Conferences/AAAI/AAAI24/student-abstract-poster/)
+*   **Relevance Score:** 4
+*   **Difficulty:** 3
+*   **Notes:** Broad scope, good opportunity for early career researchers.
+
+**2. ACL 2025 Student Research Workshop (SRW):**
+
+*   **Organizer:** ACL (Association for Computational Linguistics)
+*   **Location & Dates:** Vienna, Austria, July 28, 2025 (co-located with ACL 2025, July 27 - August 1, 2025)
+*   **Scope/Topics:** Computational Linguistics, Natural Language Processing
+*   **Submission Type:** Talk/Poster (likely)
+*   **Abstract Submission Deadline:** [To be announced]
+*   **Review Model:** [To be announced]
+*   **Submission/CFP Link:** [https://www.aclweb.org/anthology/venues/SRW-2025/](https://www.aclweb.org/anthology/venues/SRW-2025/)
+*   **Relevance Score:** 5
+*   **Difficulty:** 4
+*   **Notes:** Focus on presenting early-stage NLP research. Highly competitive.
+
+**3. MICCAI Student Research Program Workshops - Detailed Analysis:**
+
+*To be announced, details to be populated after initial investigation.*
+
+**4. General Conference Opportunities:**
+
+*   **NeurIPS:** (Details to be populated)
+*   **ICLR:** (Details to be populated)
+*   **CVPR:** (Details to be populated)
+
+**5. MICCAI Student Research Program Workshops - Detailed Analysis:**
+
+*To be announced, details to be populated after initial investigation.*
+
+**6. Google Sheet Integration:**
+
+*The Google Sheet will contain rows for each conference and student program, including the information listed above. The sheet will be regularly updated with new opportunities and changes to existing programs.*
+
+**7. General Notes:**
+
+*   **Link Decay:** Conference websites and workshop pages change frequently. *Always* verify deadlines and guidelines on the official websites.
+*   **Eligibility:** Carefully review eligibility criteria. Some workshops are restricted to specific student levels or institutions.
+*   **Student Registration Fees:** These vary significantly. Factor them into your budget.
+*   **Travel Support:** Application deadlines and award amounts vary. Check workshop websites for details.
+*   **ACL/EMNLP/NAACL Student Research Workshops:** These workshops often have a distinct submission cycle, typically opening several months before the main conference. They prioritize early-stage research and often involve a presentation component. Keep an eye out for calls.
+*   **NeurIPS Workshops:** Many NeurIPS workshops have their own deadlines and submission processes. Check the individual workshop websites.

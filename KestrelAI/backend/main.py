@@ -218,6 +218,19 @@ class SystemMetrics(BaseModel):
     tokensUsed: int
     estimatedCost: float
 
+class OllamaMode(str, Enum):
+    local = "local"
+    docker = "docker"
+
+class Orchestrator(str, Enum):
+    hummingbird = "hummingbird"
+    kestrel = "kestrel"
+    albatross = "albatross"
+
+class AppSettings(BaseModel):
+    ollamaMode: OllamaMode = Field(default=OllamaMode.local, description="Where to send Ollama calls")
+    orchestrator: Orchestrator = Field(default=Orchestrator.kestrel, description="Research orchestrator profile")
+
 # Redis Helper Functions
 async def get_redis() -> redis.Redis:
     """Get Redis client"""

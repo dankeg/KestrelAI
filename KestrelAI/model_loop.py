@@ -15,7 +15,7 @@ import logging
 from shared.models import Task, TaskStatus
 from memory.vector_store import MemoryStore
 from agents.base import LlmWrapper
-from agents.research_agents import ResearchAgent
+from agents.research_agents import SEARCH_RESULTS, ResearchAgent
 from agents.orchestrator import Orchestrator
 from shared.redis_utils import get_task, save_task, send_command, init_redis, close_redis
 
@@ -434,7 +434,7 @@ class KestrelAgentWorker:
                 self.redis_client.send_search(
                     task_id,
                     query,
-                    results=0,
+                    results=SEARCH_RESULTS,
                     sources=["agent_search"]
                 )
             

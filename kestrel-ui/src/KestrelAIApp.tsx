@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { X } from "lucide-react";
 
 // ==========================
 // API Configuration
@@ -104,6 +105,22 @@ interface SystemMetrics {
   tokensUsed?: number;
   estimatedCost?: number;
 }
+
+// ==========================
+// App Settings
+// ==========================
+type OllamaMode = "local" | "docker";
+type Orchestrator = "hummingbird" | "kestrel" | "albatross";
+
+interface AppSettings {
+  ollamaMode: OllamaMode;
+  orchestrator: Orchestrator;
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  ollamaMode: "local",
+  orchestrator: "kestrel",
+};
 
 // ==========================
 // API Client
@@ -225,6 +242,23 @@ class KestrelAPI {
     const response = await fetch(`${this.baseURL}/tasks/${taskId}/export?format=${format}`);
     if (!response.ok) throw new Error(`Export failed: ${response.status}`);
     return response.blob();
+  }
+
+  // ---- Settings (best-effort, non-throwing) ----
+  async saveSettings(settings: AppSettings): Promise<void> {
+    try {
+      const res = await fetch(`${this.baseURL}/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+      });
+      if (!res.ok) {
+        // Do not crash the UI if the endpoint is not implemented yet
+        console.warn("Settings POST failed:", res.status, res.statusText);
+      }
+    } catch (err) {
+      console.warn("Settings POST error:", err);
+    }
   }
 }
 
@@ -752,6 +786,33 @@ function useMetrics(taskId: string | null) {
   }, [taskId]);
 
   return { metrics, isLoading, setMetrics };
+}
+
+// ==========================
+// Hook: App Settings
+// ==========================
+function useAppSettings() {
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    try {
+      const raw = localStorage.getItem("kestrel.settings");
+      return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : DEFAULT_SETTINGS;
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  });
+
+  const updateSettings = async (patch: Partial<AppSettings>) => {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    try {
+      localStorage.setItem("kestrel.settings", JSON.stringify(next));
+    } catch { /* ignore quota errors */ }
+
+    // Fire-and-forget best-effort POST
+    api.saveSettings(next);
+  };
+
+  return { settings, updateSettings };
 }
 
 // ==========================
@@ -1448,6 +1509,138 @@ function TaskDashboard({
   );
 }
 
+function SettingsModal({
+  open,
+  onClose,
+  settings,
+  onChange,
+}: {
+  open: boolean;
+  onClose: () => void;
+  settings: AppSettings;
+  onChange: (patch: Partial<AppSettings>) => void;
+}) {
+  // Close on ESC
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const SelFrame = ({ selected, children }: { selected: boolean; children: React.ReactNode }) => (
+    <div
+      className={[
+        "p-4 rounded-xl border-2 transition-all bg-white",
+        selected ? "border-amber-500 shadow-md ring-2 ring-amber-200" : "border-gray-200 hover:border-amber-300",
+      ].join(" ")}
+    >
+      {children}
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[100]">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      {/* Dialog */}
+      <div className="absolute inset-0 flex items-center justify-center p-4">
+        <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-amber-200 overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-amber-200">
+            <h2 className="text-lg font-bold text-gray-900">Settings</h2>
+            <button onClick={onClose} className="p-2 rounded hover:bg-amber-100">
+              <X className="w-5 h-5 text-amber-700" />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="p-6 space-y-6">
+            {/* Runtime selection */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">Ollama Runtime</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => onChange({ ollamaMode: "local" })}>
+                  <SelFrame selected={settings.ollamaMode === "local"}>
+                    <div className="font-semibold text-gray-900">Local</div>
+                    <div className="text-xs text-gray-600">
+                      Use the Ollama instance running on this machine.
+                    </div>
+                  </SelFrame>
+                </button>
+
+                <button onClick={() => onChange({ ollamaMode: "docker" })}>
+                  <SelFrame selected={settings.ollamaMode === "docker"}>
+                    <div className="font-semibold text-gray-900">Docker</div>
+                    <div className="text-xs text-gray-600">
+                      Route requests to the Dockerized Ollama service.
+                    </div>
+                  </SelFrame>
+                </button>
+              </div>
+            </section>
+
+            {/* Orchestrator selection */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">Orchestrator</h3>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <button onClick={() => onChange({ orchestrator: "hummingbird" })}>
+                  <SelFrame selected={settings.orchestrator === "hummingbird"}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Zap className="w-4 h-4 text-amber-600" />
+                      <div className="font-semibold text-gray-900">Hummingbird</div>
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      Fast, focused answers on a single prompt with minimal exploration.
+                    </div>
+                  </SelFrame>
+                </button>
+
+                <button onClick={() => onChange({ orchestrator: "kestrel" })}>
+                  <SelFrame selected={settings.orchestrator === "kestrel"}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Brain className="w-4 h-4 text-amber-600" />
+                      <div className="font-semibold text-gray-900">Kestrel</div>
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      Balanced exploration: expands key angles and synthesizes medium-depth insights.
+                    </div>
+                  </SelFrame>
+                </button>
+
+                <button onClick={() => onChange({ orchestrator: "albatross" })}>
+                  <SelFrame selected={settings.orchestrator === "albatross"}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Globe className="w-4 h-4 text-amber-600" />
+                      <div className="font-semibold text-gray-900">Albatross</div>
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      Long-horizon research: new leads, deep dives, and cross-topic synthesis.
+                    </div>
+                  </SelFrame>
+                </button>
+              </div>
+            </section>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 bg-gradient-to-r from-amber-50 to-orange-50 border-t border-amber-200 flex justify-end">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 rounded-lg bg-amber-600 text-white font-semibold hover:bg-amber-700 transition"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ==========================
 // Main App Component
 // ==========================
@@ -1467,6 +1660,8 @@ export default function App() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const { settings, updateSettings } = useAppSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Filter tasks based on search
   const filteredTasks = tasks.filter(
@@ -1569,7 +1764,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <button className="p-2 hover:bg-amber-700/30 rounded-lg transition-colors">
+              <button className="p-2 hover:bg-amber-700/30 rounded-lg transition-colors" onClick={() => setSettingsOpen(true)}>
                 <Settings className="w-4 h-4 text-amber-300" />
               </button>
             </div>
@@ -1631,6 +1826,12 @@ export default function App() {
           </div>
         )}
       </div>
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        settings={settings}
+        onChange={updateSettings}
+      />
     </div>
   );
 }

@@ -17,8 +17,7 @@ services:
 
   backend:
     build:
-      context: ./KestrelAI/backend
-      dockerfile: backend_dockerfile
+      dockerfile: ./Dockerfiles/backend_dockerfile
     container_name: kestrel-backend
     restart: unless-stopped
     working_dir: /app
@@ -38,11 +37,11 @@ services:
       redis: { condition: service_started }
       ollama: { condition: service_started }
       ollama-init: { condition: service_completed_successfully }
+    image: ghcr.io/dankeg/kestrelai-backend:commit-${COMMIT_SHA}
 
   frontend:
     build:
-      context: ./kestrel-ui
-      dockerfile: frontend_dockerfile
+      dockerfile: ./Dockerfiles/frontend_dockerfile
     container_name: kestrel-frontend
     restart: unless-stopped
     working_dir: /app
@@ -56,11 +55,11 @@ services:
     command: npm run dev -- --host 0.0.0.0
     depends_on:
       - backend
+    image: ghcr.io/dankeg/kestrelai-frontend:commit-${COMMIT_SHA}
 
   agent:
     build:
-      context: ./KestrelAI
-      dockerfile: agent_dockerfile
+      dockerfile: ./Dockerfiles/agent_dockerfile
     container_name: kestrel-agent
     restart: unless-stopped
     working_dir: /app
@@ -82,6 +81,7 @@ services:
       searxng: { condition: service_started }
       ollama: { condition: service_started }
       ollama-init: { condition: service_completed_successfully }
+    image: ghcr.io/dankeg/kestrelai-agent:commit-${COMMIT_SHA}
 
   ollama:
     image: ollama/ollama:latest

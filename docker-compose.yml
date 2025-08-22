@@ -38,6 +38,7 @@ services:
       redis: { condition: service_started }
       ollama: { condition: service_started }
       ollama-init: { condition: service_completed_successfully }
+    image: ghcr.io/dankeg/kestrelai-backend:commit-${COMMIT_SHA}
 
   frontend:
     build:
@@ -56,6 +57,7 @@ services:
     command: npm run dev -- --host 0.0.0.0
     depends_on:
       - backend
+    image: ghcr.io/dankeg/kestrelai-frontend:commit-${COMMIT_SHA}
 
   agent:
     build:
@@ -82,6 +84,7 @@ services:
       searxng: { condition: service_started }
       ollama: { condition: service_started }
       ollama-init: { condition: service_completed_successfully }
+    image: ghcr.io/dankeg/kestrelai-agent:commit-${COMMIT_SHA}
 
   ollama:
     image: ollama/ollama:latest

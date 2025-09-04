@@ -103,28 +103,6 @@ class KestrelRedisClient:
         self.redis.lpush("kestrel:queue:searches", json.dumps(payload))
 
 # -----------------------------------------------------------------------------
-# Task Manager
-# -----------------------------------------------------------------------------
-class TaskManager:
-    """Handles task-related operations"""
-
-    def __init__(self, redis_client: KestrelRedisClient):
-        self.redis_client = redis_client
-        self.tasks: Dict[str, Task] = {}
-
-    def start_task(self, task_id: str, config: Dict[str, Any]):
-        """Start a new research task"""
-        task = Task(
-            name=config.get("name", "Research Task"),
-            description=config.get("description", ""),
-            budgetMinutes=config.get("budgetMinutes", 180),
-            status=TaskStatus.ACTIVE
-        )
-        self.tasks[task_id] = task
-        self.redis_client.send_update(task_id, status=TaskStatus.ACTIVE.name, progress=0.0)
-        logger.info(f"Started task {task_id}: {task.name}")
-
-# -----------------------------------------------------------------------------
 # KestrelAI Research Agent Worker
 # -----------------------------------------------------------------------------
 class KestrelAgentWorker:
@@ -178,16 +156,6 @@ class KestrelAgentWorker:
             
             time.sleep(0.1)
                 
-            # except Exception as e:
-            #     logger.error(f"Error in agent loop: {e}")
-            #     if self.current_task_id:
-            #         self.redis_client.send_activity(
-            #             self.current_task_id,
-            #             "error",
-            #             f"❌ Error: {str(e)[:100]}"
-            #         )
-            #     time.sleep(2)
-    
     def handle_command(self, command: Dict[str, Any]):
         """Handle command from backend"""
         cmd_type = command.get("type")
@@ -375,23 +343,15 @@ class KestrelAgentWorker:
             if "[SEARCH]" in notes:
                 activity_type = "search"
                 message = "🔍 Searching for information"
-                self.task_metrics[task_id]["search_count"] += 1
-                self.global_metrics["total_searches"] += 1
-                self.extract_and_log_search(task_id, notes)
             elif "[THOUGHT]" in notes or "[THINKING]" in notes:
                 activity_type = "thinking"
                 message = "🤔 Analyzing findings"
-                self.task_metrics[task_id]["think_count"] += 1
             elif "[SUMMARY]" in notes:
                 activity_type = "summary"
                 message = "📝 Creating summary"
-                self.task_metrics[task_id]["summary_count"] += 1
-                self.global_metrics["total_summaries"] += 1
             elif "[CHECKPOINT" in notes:
                 activity_type = "checkpoint"
                 message = "💾 Saving checkpoint"
-                self.task_metrics[task_id]["checkpoint_count"] += 1
-                self.global_metrics["total_checkpoints"] += 1
             else:
                 activity_type = "analysis"
                 message = "⚙️ Processing"
@@ -461,30 +421,7 @@ class KestrelAgentWorker:
             # Check if task is complete
             if progress >= 100.0:
                 self.stop_task()
-    
-    def extract_and_log_search(self, task_id: str, notes: str):
-        """Extract search queries from notes and log them"""
-        import re
         
-        patterns = [
-            r"searching for[:\s]+([^\n]+)",
-            r"query[:\s]+([^\n]+)",
-            r"\[SEARCH\][:\s]*([^\n]+)"
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, notes, re.IGNORECASE)
-            for match in matches:
-                query = match.strip()
-                if query:
-                    self.redis_client.send_search(
-                        task_id,
-                        query,
-                        results=0,
-                        sources=["agent_search"]
-                    )
-                    break
-    
     def generate_final_report(self):
         """Generate and send final report"""
         if not self.current_task_id:
@@ -545,8 +482,6 @@ def main():
     worker = KestrelAgentWorker()
     
     worker.run()
-    # logger.info("Agent worker stopped by user")
-    # logger.error(f"Agent worker error: {e}")
-
+    
 if __name__ == "__main__":
     main()

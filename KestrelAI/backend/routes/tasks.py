@@ -2,15 +2,21 @@ from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from typing import List, Dict, Any
 from datetime import datetime
 from shared.models import Task, TaskStatus
-from ..services.redis_service import get_task_from_redis, save_task_to_redis, send_command
+from ..services.redis_service import (
+    get_task_from_redis,
+    save_task_to_redis,
+    send_command,
+)
 
 router = APIRouter()
+
 
 @router.get("/tasks", response_model=List[Task])
 async def get_tasks():
     """Get all tasks"""
     # Example logic to fetch tasks from Redis
     return []
+
 
 @router.get("/tasks/{task_id}", response_model=Task)
 async def get_task(task_id: str):
@@ -19,6 +25,7 @@ async def get_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
     return task
+
 
 @router.post("/tasks", response_model=Task)
 async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTasks):
@@ -29,10 +36,11 @@ async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTas
         description=task_data.get("description", ""),
         budgetMinutes=task_data.get("budgetMinutes", 180),
         status=TaskStatus.CONFIGURING,
-        config=task_data.get("config", {})
+        config=task_data.get("config", {}),
     )
     await save_task_to_redis(task)
     return task
+
 
 @router.patch("/tasks/{task_id}", response_model=Task)
 async def update_task(task_id: str, updates: Dict[str, Any]):
@@ -47,6 +55,7 @@ async def update_task(task_id: str, updates: Dict[str, Any]):
     await save_task_to_redis(task)
     return task
 
+
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str):
     """Delete a task"""
@@ -55,6 +64,7 @@ async def delete_task(task_id: str):
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
     # Logic to delete task from Redis
     return {"message": "Task deleted successfully"}
+
 
 @router.post("/tasks/{task_id}/start", response_model=Task)
 async def start_task(task_id: str):
@@ -67,6 +77,7 @@ async def start_task(task_id: str):
     await send_command(task_id, "start", {})
     return task
 
+
 @router.post("/tasks/{task_id}/pause", response_model=Task)
 async def pause_task(task_id: str):
     """Pause a task"""
@@ -77,6 +88,7 @@ async def pause_task(task_id: str):
     await save_task_to_redis(task)
     await send_command(task_id, "pause", {})
     return task
+
 
 @router.post("/tasks/{task_id}/resume", response_model=Task)
 async def resume_task(task_id: str):

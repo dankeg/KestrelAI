@@ -485,6 +485,7 @@ llm = LlmWrapper(model="gemma3:12b")
 agent = ResearchAgent(mem, llm)
 orch = Orchestrator(tasks, llm)
 
+
 # -----------------------------------------------------------------------------
 # State management
 # -----------------------------------------------------------------------------
@@ -495,11 +496,11 @@ class DashboardState:
         self.latest_notes: str = ""
         self.is_paused: bool = False
         self.start_time: float = time.time()
-        
+
         # Store all report versions
         self.report_history: List[Dict] = []  # List of {timestamp, task, content}
         self.current_report_index: int = -1  # Index of currently viewed report
-        
+
         self.task_history: Dict[str, Dict] = {
             task.name: {
                 "status": "pending",
@@ -514,60 +515,59 @@ class DashboardState:
                 "checkpoint_count": 0,
                 "last_action": "",
                 "start_time": None,
-                "end_time": None
-            } for task in tasks
+                "end_time": None,
+            }
+            for task in tasks
         }
-        
+
         self.activity_log: deque = deque(maxlen=50)
         self.search_history: deque = deque(maxlen=100)
-        
+
         # Real metrics from agent
         self.total_llm_calls: int = 0
         self.total_searches: int = 0
         self.total_summaries: int = 0
         self.total_checkpoints: int = 0
         self.total_web_fetches: int = 0
-        
+
         self.last_update: float = time.time()
-        
+
     def add_report(self, task_name: str, content: str):
         """Add a new report to history"""
-        self.report_history.append({
-            "timestamp": datetime.now(),
-            "task": task_name,
-            "content": content
-        })
+        self.report_history.append(
+            {"timestamp": datetime.now(), "task": task_name, "content": content}
+        )
         self.current_report_index = len(self.report_history) - 1
-    
+
     def get_current_report(self) -> Dict:
         """Get the currently selected report"""
         # Ensure current_report_index is an integer
         idx = self.current_report_index
         if isinstance(idx, tuple):
             idx = idx[1] if len(idx) > 1 else 0
-        
+
         if 0 <= idx < len(self.report_history):
             return self.report_history[idx]
         elif self.report_history:
             return self.report_history[-1]
         return None
-    
+
     def navigate_report(self, direction: int):
         """Navigate through report history (-1 for previous, 1 for next)"""
         if not self.report_history:
             return
-        
+
         new_index = self.current_report_index + direction
         if 0 <= new_index < len(self.report_history):
             self.current_report_index = new_index
-        
+
     def get_runtime(self) -> str:
         """Get total runtime formatted as HH:MM:SS"""
         elapsed = time.time() - self.start_time
         hours, remainder = divmod(int(elapsed), 3600)
         minutes, seconds = divmod(remainder, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    
+
     def export_state(self, include_full_reports: bool = False) -> Dict:
         """Export current state as JSON"""
         return {
@@ -579,7 +579,7 @@ class DashboardState:
                 "total_searches": self.total_searches,
                 "total_summaries": self.total_summaries,
                 "total_checkpoints": self.total_checkpoints,
-                "total_web_fetches": self.total_web_fetches
+                "total_web_fetches": self.total_web_fetches,
             },
             "tasks": {
                 name: {
@@ -590,7 +590,7 @@ class DashboardState:
                     "action_count": info["action_count"],
                     "think_count": info["think_count"],
                     "search_count": info["search_count"],
-                    "summary_count": info["summary_count"]
+                    "summary_count": info["summary_count"],
                 }
                 for name, info in self.task_history.items()
             },
@@ -599,74 +599,82 @@ class DashboardState:
                 {
                     "timestamp": r["timestamp"].isoformat(),
                     "task": r["task"],
-                    "content": r["content"] if include_full_reports else r["content"][:1000]
+                    "content": (
+                        r["content"] if include_full_reports else r["content"][:1000]
+                    ),
                 }
                 for r in self.report_history
-            ]
+            ],
         }
 
+
 state = DashboardState()
+
 
 # -----------------------------------------------------------------------------
 # Orchestration loop
 # -----------------------------------------------------------------------------
 def orchestration_loop():
     pathlib.Path("notes").mkdir(exist_ok=True)
-    
+
     while True:
         if state.is_paused:
             time.sleep(0.5)
             continue
-            
+
         if not orch.current:
             time.sleep(1)
             continue
-            
-        
+
         task = orch.tasks[orch.current]
-        
+
         # Handle task switching
         if state.current_task != task.name:
-            if state.current_task != "Initializing..." and state.current_task in state.task_history:
+            if (
+                state.current_task != "Initializing..."
+                and state.current_task in state.task_history
+            ):
                 state.task_history[state.current_task]["status"] = "complete"
                 state.task_history[state.current_task]["end_time"] = time.time()
-            
+
             state.current_task = task.name
             state.task_start = time.time()
             state.task_history[task.name]["status"] = "active"
             if state.task_history[task.name]["start_time"] is None:
                 state.task_history[task.name]["start_time"] = time.time()
-            
-            state.activity_log.append({
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "type": "task_start",
-                "message": f"🦅 Started: {task.name.title()}"
-            })
+
+            state.activity_log.append(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "task_start",
+                    "message": f"🦅 Started: {task.name.title()}",
+                }
+            )
             state.last_update = time.time()
 
         # Execute research step
         notes = agent.run_step(task)
-        
+
         if notes and len(notes) > 10:
             state.latest_notes = notes
-            
+
             # Store report in history
             state.add_report(task.name, notes)
-            
+
             # Get REAL metrics from agent
-            if hasattr(agent, 'get_global_metrics'):
+            if hasattr(agent, "get_global_metrics"):
                 metrics = agent.get_global_metrics()
                 state.total_llm_calls = metrics.get("total_llm_calls", 0)
                 state.total_searches = metrics.get("total_searches", 0)
                 state.total_summaries = metrics.get("total_summaries", 0)
                 state.total_checkpoints = metrics.get("total_checkpoints", 0)
                 state.total_web_fetches = metrics.get("total_web_fetches", 0)
-            
+
             # Get task-specific metrics
-            if hasattr(agent, 'get_task_metrics'):
+            if hasattr(agent, "get_task_metrics"):
                 task_metrics = agent.get_task_metrics(task.name)
                 task_info = state.task_history[task.name]
-                
+
                 # Update with REAL data from agent
                 task_info["searches"] = task_metrics.get("searches", [])
                 task_info["search_count"] = task_metrics.get("search_count", 0)
@@ -674,34 +682,43 @@ def orchestration_loop():
                 task_info["summary_count"] = task_metrics.get("summary_count", 0)
                 task_info["checkpoint_count"] = task_metrics.get("checkpoint_count", 0)
                 task_info["action_count"] = task_metrics.get("action_count", 0)
-                
+
                 # Update search history with real search data
                 for search_entry in task_metrics.get("search_history", []):
                     if isinstance(search_entry, dict) and "query" in search_entry:
-                        if not any(s.get("query") == search_entry["query"] for s in state.search_history):
-                            state.search_history.append({
-                                "time": datetime.now().strftime("%H:%M:%S"),
-                                "task": task.name,
-                                "query": search_entry["query"],
-                                "results_count": search_entry.get("results_count", 0)
-                            })
-            
+                        if not any(
+                            s.get("query") == search_entry["query"]
+                            for s in state.search_history
+                        ):
+                            state.search_history.append(
+                                {
+                                    "time": datetime.now().strftime("%H:%M:%S"),
+                                    "task": task.name,
+                                    "query": search_entry["query"],
+                                    "results_count": search_entry.get(
+                                        "results_count", 0
+                                    ),
+                                }
+                            )
+
             # Update common fields
             elapsed = time.time() - state.task_start
             progress = min(100, (elapsed / (task.budget_minutes * 60)) * 100)
-            
+
             task_info = state.task_history[task.name]
-            task_info.update({
-                "elapsed": elapsed,
-                "progress": progress,
-                "notes": notes[:1000],
-                "last_action": datetime.now().strftime("%H:%M:%S")
-            })
-            
+            task_info.update(
+                {
+                    "elapsed": elapsed,
+                    "progress": progress,
+                    "notes": notes[:1000],
+                    "last_action": datetime.now().strftime("%H:%M:%S"),
+                }
+            )
+
             # Save notes
             with open(f"notes/{task.name.upper()}.txt", "w", encoding="utf-8") as fh:
                 fh.write(notes)
-            
+
             # Log activity with emojis
             if "[SEARCH]" in notes:
                 message = "🔍 Searching for information"
@@ -713,20 +730,21 @@ def orchestration_loop():
                 message = "💾 Saving checkpoint"
             else:
                 message = "⚙️ Processing"
-            
-            state.activity_log.append({
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "type": "action",
-                "message": message
-            })
-            
+
+            state.activity_log.append(
+                {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "type": "action",
+                    "message": message,
+                }
+            )
+
             state.last_update = time.time()
-        
+
         # Let orchestrator decide next
         orch.next_action(task, notes)
         time.sleep(0.5)
-        
-    
+
         # print(f"Error in orchestration loop: {e}")
         # state.activity_log.append({
         #     "time": datetime.now().strftime("%H:%M:%S"),
@@ -736,8 +754,11 @@ def orchestration_loop():
         state.last_update = time.time()
         time.sleep(2)
 
+
 # Start background thread
-thread = threading.Thread(target=orchestration_loop, daemon=True, name="OrchestratorThread")
+thread = threading.Thread(
+    target=orchestration_loop, daemon=True, name="OrchestratorThread"
+)
 thread.start()
 
 # -----------------------------------------------------------------------------
@@ -750,7 +771,7 @@ TEMPLATE = pn.template.FastListTemplate(
     theme="default",
     accent_base_color="#D2691E",
     header_background="#8B6F47",
-    sidebar_width=500
+    sidebar_width=500,
 )
 
 pn.config.raw_css.append(CUSTOM_CSS)
@@ -763,33 +784,40 @@ header_pane = pn.pane.HTML(
         <p class="header-subtitle">Autonomous Multi-Agent Intelligence System</p>
     </div>
     """,
-    sizing_mode="stretch_width"
+    sizing_mode="stretch_width",
 )
+
 
 # Control buttons
 def pause_resume():
     state.is_paused = not state.is_paused
     pause_btn.name = "▶️ Resume" if state.is_paused else "⏸️ Pause"
-    state.activity_log.append({
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "type": "control",
-        "message": "⏸️ Paused" if state.is_paused else "▶️ Resumed"
-    })
+    state.activity_log.append(
+        {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "type": "control",
+            "message": "⏸️ Paused" if state.is_paused else "▶️ Resumed",
+        }
+    )
+
 
 def export_results(include_full: bool = True):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"kestrel_export_{timestamp}.json"
-    with open(filename, 'w', encoding='utf-8') as f:
+    with open(filename, "w", encoding="utf-8") as f:
         json.dump(state.export_state(include_full_reports=include_full), f, indent=2)
-    pn.state.notifications.success(f'📊 Exported to {filename}', duration=3000)
+    pn.state.notifications.success(f"📊 Exported to {filename}", duration=3000)
+
 
 def prev_report():
     state.navigate_report(-1)
     update_dashboard()
 
+
 def next_report():
     state.navigate_report(1)
     update_dashboard()
+
 
 pause_btn = Button(name="⏸️ Pause", button_type="warning", width=120)
 pause_btn.on_click(lambda e: pause_resume())
@@ -809,28 +837,61 @@ next_btn.on_click(lambda e: next_report())
 report_nav_row = pn.Row(prev_btn, next_btn, sizing_mode="stretch_width")
 
 # Dashboard panes
-status_pane = pn.pane.HTML("<div class='kestrel-card'>Loading...</div>", sizing_mode="stretch_width")
+status_pane = pn.pane.HTML(
+    "<div class='kestrel-card'>Loading...</div>", sizing_mode="stretch_width"
+)
 task_cards_pane = pn.pane.HTML("<div>Loading...</div>", sizing_mode="stretch_width")
-metrics_pane = pn.pane.HTML("<div class='kestrel-card'>Loading...</div>", sizing_mode="stretch_width")
-activity_pane = pn.pane.HTML("<div class='kestrel-card'>Loading...</div>", min_height=250, max_height=350, sizing_mode="stretch_width",
-    styles={"overflow-y": "auto"})
-notes_pane = pn.pane.Markdown("## 📝 Research Notes\n\n_Waiting..._", min_height=500, sizing_mode="stretch_width",
-    styles={"background": "rgba(245, 230, 211, 0.3)", "padding": "24px", "border-radius": "20px", "overflow-y": "auto"})
-search_pane = pn.pane.HTML("<div class='kestrel-card'>Loading...</div>", min_height=250, max_height=350, sizing_mode="stretch_width",
-    styles={"overflow-y": "auto"})
-report_info_pane = pn.pane.HTML("<div style='text-align: center; color: #8B6F47; font-size: 14px;'>No reports yet</div>", 
-    sizing_mode="stretch_width")
+metrics_pane = pn.pane.HTML(
+    "<div class='kestrel-card'>Loading...</div>", sizing_mode="stretch_width"
+)
+activity_pane = pn.pane.HTML(
+    "<div class='kestrel-card'>Loading...</div>",
+    min_height=250,
+    max_height=350,
+    sizing_mode="stretch_width",
+    styles={"overflow-y": "auto"},
+)
+notes_pane = pn.pane.Markdown(
+    "## 📝 Research Notes\n\n_Waiting..._",
+    min_height=500,
+    sizing_mode="stretch_width",
+    styles={
+        "background": "rgba(245, 230, 211, 0.3)",
+        "padding": "24px",
+        "border-radius": "20px",
+        "overflow-y": "auto",
+    },
+)
+search_pane = pn.pane.HTML(
+    "<div class='kestrel-card'>Loading...</div>",
+    min_height=250,
+    max_height=350,
+    sizing_mode="stretch_width",
+    styles={"overflow-y": "auto"},
+)
+report_info_pane = pn.pane.HTML(
+    "<div style='text-align: center; color: #8B6F47; font-size: 14px;'>No reports yet</div>",
+    sizing_mode="stretch_width",
+)
 
 # --- Report history browser controls (Task filter + search + version select) ---
-task_filter = pn.widgets.Select(name="Task", options=["All"] + [t.name for t in tasks], value="All", width=160)
-search_filter = pn.widgets.TextInput(name="Search text", placeholder="filter report contents…", width=220)
+task_filter = pn.widgets.Select(
+    name="Task", options=["All"] + [t.name for t in tasks], value="All", width=160
+)
+search_filter = pn.widgets.TextInput(
+    name="Search text", placeholder="filter report contents…", width=220
+)
 version_select = pn.widgets.Select(name="Version", options=[], width=320)
+
 
 def _format_option(i, r):
     ts = r["timestamp"].strftime("%H:%M:%S")
     return f"{i+1}. [{r['task']}] @ {ts} — {len(r['content'])} chars"
 
-def rebuild_version_options(update_value: bool = False, triggered_by_user: bool = False):
+
+def rebuild_version_options(
+    update_value: bool = False, triggered_by_user: bool = False
+):
     opts = []
     q = (search_filter.value or "").lower()
     for i, r in enumerate(state.report_history):
@@ -839,10 +900,10 @@ def rebuild_version_options(update_value: bool = False, triggered_by_user: bool 
         if q and q not in r["content"].lower():
             continue
         opts.append((_format_option(i, r), i))
-    
+
     # FIX: Normalize options for comparison
     current_options = version_select.options
-    
+
     # Convert current_options to list of tuples for comparison
     if current_options is None:
         normalized_current = []
@@ -857,11 +918,13 @@ def rebuild_version_options(update_value: bool = False, triggered_by_user: bool 
             normalized_current = [(str(v), v) for v in current_options]
     else:
         normalized_current = []
-    
+
     # Only compare the values (indices), not the labels which can change
-    current_values = sorted([v for _, v in normalized_current]) if normalized_current else []
+    current_values = (
+        sorted([v for _, v in normalized_current]) if normalized_current else []
+    )
     new_values = sorted([v for _, v in opts]) if opts else []
-    
+
     # Update only if the actual values have changed
     if current_values != new_values:
         version_select.options = opts
@@ -875,26 +938,37 @@ def rebuild_version_options(update_value: bool = False, triggered_by_user: bool 
             if triggered_by_user:
                 update_dashboard()
 
+
 def on_select_version(event):
     if event.new is not None:
         # Extract value if it's a tuple (label, value)
         new_val = event.new
         if isinstance(new_val, tuple):
             new_val = new_val[1] if len(new_val) > 1 else new_val[0]
-        
+
         if new_val != state.current_report_index:
             state.current_report_index = new_val
             update_dashboard()
 
+
 # Watchers
-task_filter.param.watch(lambda e: rebuild_version_options(update_value=True, triggered_by_user=True), "value")
-search_filter.param.watch(lambda e: rebuild_version_options(update_value=True, triggered_by_user=True), "value")
+task_filter.param.watch(
+    lambda e: rebuild_version_options(update_value=True, triggered_by_user=True),
+    "value",
+)
+search_filter.param.watch(
+    lambda e: rebuild_version_options(update_value=True, triggered_by_user=True),
+    "value",
+)
 version_select.param.watch(on_select_version, "value")
 
-history_controls = pn.Row(task_filter, search_filter, version_select, sizing_mode="stretch_width")
+history_controls = pn.Row(
+    task_filter, search_filter, version_select, sizing_mode="stretch_width"
+)
 
 # Initial populate of version options
 rebuild_version_options(update_value=True, triggered_by_user=False)
+
 
 # Update function
 def update_dashboard():
@@ -912,15 +986,21 @@ def update_dashboard():
         </div>
         """
         status_pane.object = status_html
-        
+
         # Task cards with beautiful design
         cards_html = ""
         for task in tasks:
             info = state.task_history[task.name]
-            status = "paused" if state.is_paused and info["status"] == "active" else info["status"]
+            status = (
+                "paused"
+                if state.is_paused and info["status"] == "active"
+                else info["status"]
+            )
             active_class = "task-active" if status == "active" else ""
-            elapsed_str = f"{int(info['elapsed']//60):02d}:{int(info['elapsed']%60):02d}"
-            
+            elapsed_str = (
+                f"{int(info['elapsed']//60):02d}:{int(info['elapsed']%60):02d}"
+            )
+
             cards_html += f"""
             <div class='kestrel-card {active_class}'>
                 <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;'>
@@ -956,9 +1036,9 @@ def update_dashboard():
                 </div>
             </div>
             """
-        
+
         task_cards_pane.object = cards_html
-        
+
         # Global metrics with REAL data
         metrics_html = f"""
         <div class='kestrel-card'>
@@ -988,10 +1068,12 @@ def update_dashboard():
         </div>
         """
         metrics_pane.object = metrics_html
-        
+
         # Activity feed
         if state.activity_log:
-            activity_html = "<div class='kestrel-card'><h3 class='card-title'>Live Activity</h3>"
+            activity_html = (
+                "<div class='kestrel-card'><h3 class='card-title'>Live Activity</h3>"
+            )
             for entry in list(state.activity_log)[-10:][::-1]:
                 activity_html += f"""
                 <div class='activity-item'>
@@ -1001,12 +1083,16 @@ def update_dashboard():
                 """
             activity_html += "</div>"
             activity_pane.object = activity_html
-        
+
         # Search history with results count
         if state.search_history:
             search_html = "<div class='kestrel-card'><h3 class='card-title'>Search Intelligence</h3>"
             for search in list(state.search_history)[-8:][::-1]:
-                results_text = f"<span class='search-results'>({search.get('results_count', 0)} hits)</span>" if 'results_count' in search else ""
+                results_text = (
+                    f"<span class='search-results'>({search.get('results_count', 0)} hits)</span>"
+                    if "results_count" in search
+                    else ""
+                )
                 search_html += f"""
                 <div class='search-item'>
                     <span class='activity-time'>{search['time']}</span>
@@ -1017,7 +1103,7 @@ def update_dashboard():
                 """
             search_html += "</div>"
             search_pane.object = search_html
-        
+
         # Ensure the version selector stays in sync (no dashboard recursion)
         rebuild_version_options(update_value=False, triggered_by_user=False)
 
@@ -1029,7 +1115,7 @@ def update_dashboard():
             total_reports = len(state.report_history)
             report_time = current_report["timestamp"].strftime("%H:%M:%S")
             report_task = current_report["task"]
-            
+
             report_info_html = f"""
             <div style='display: flex; justify-content: space-between; align-items: center; padding: 12px; 
                         background: rgba(139, 111, 71, 0.1); border-radius: 10px; margin-bottom: 10px;'>
@@ -1042,43 +1128,53 @@ def update_dashboard():
             </div>
             """
             report_info_pane.object = report_info_html
-            
+
             # Display the FULL report content (no truncation)
             formatted = current_report["content"]
-            formatted = re.sub(r'\[SEARCH\]', '\n\n### 🔍 Search:', formatted)
-            formatted = re.sub(r'\[THOUGHT\]', '\n\n### 🤔 Analysis:', formatted)
-            formatted = re.sub(r'\[SUMMARY\]', '\n\n### 📝 Summary:', formatted)
-            formatted = re.sub(r'\[CHECKPOINT.*?\]', '\n\n### 💾 Checkpoint:', formatted)
-            formatted = re.sub(r'(https?://[^\s]+)', r'[🔗 Link](\\1)', formatted)
-            
+            formatted = re.sub(r"\[SEARCH\]", "\n\n### 🔍 Search:", formatted)
+            formatted = re.sub(r"\[THOUGHT\]", "\n\n### 🤔 Analysis:", formatted)
+            formatted = re.sub(r"\[SUMMARY\]", "\n\n### 📝 Summary:", formatted)
+            formatted = re.sub(
+                r"\[CHECKPOINT.*?\]", "\n\n### 💾 Checkpoint:", formatted
+            )
+            formatted = re.sub(r"(https?://[^\s]+)", r"[🔗 Link](\\1)", formatted)
+
             notes_pane.object = f"## 📝 Research Intelligence Notes\n\n{formatted}"
-            
+
             # Enable/disable navigation buttons
             prev_btn.disabled = state.current_report_index <= 0
-            next_btn.disabled = state.current_report_index >= len(state.report_history) - 1
+            next_btn.disabled = (
+                state.current_report_index >= len(state.report_history) - 1
+            )
         else:
             # Show latest notes if no reports yet
             if state.latest_notes:
                 formatted = state.latest_notes
-                formatted = re.sub(r'\[SEARCH\]', '\n\n### 🔍 Search:', formatted)
-                formatted = re.sub(r'\[THOUGHT\]', '\n\n### 🤔 Analysis:', formatted)
-                formatted = re.sub(r'\[SUMMARY\]', '\n\n### 📝 Summary:', formatted)
-                formatted = re.sub(r'\[CHECKPOINT.*?\]', '\n\n### 💾 Checkpoint:', formatted)
-                formatted = re.sub(r'(https?://[^\s]+)', r'[🔗 Link](\\1)', formatted)
-                
+                formatted = re.sub(r"\[SEARCH\]", "\n\n### 🔍 Search:", formatted)
+                formatted = re.sub(r"\[THOUGHT\]", "\n\n### 🤔 Analysis:", formatted)
+                formatted = re.sub(r"\[SUMMARY\]", "\n\n### 📝 Summary:", formatted)
+                formatted = re.sub(
+                    r"\[CHECKPOINT.*?\]", "\n\n### 💾 Checkpoint:", formatted
+                )
+                formatted = re.sub(r"(https?://[^\s]+)", r"[🔗 Link](\\1)", formatted)
+
                 notes_pane.object = f"## 📝 Research Intelligence Notes\n\n{formatted}"
-            
+
             prev_btn.disabled = True
             next_btn.disabled = True
-            
+
     except Exception as e:
         print(f"Dashboard update error: {e}")
+
 
 # Periodic updates
 cb = pn.state.add_periodic_callback(update_dashboard, period=750)
 
 # Optional: periodically refresh version options so new reports appear in the picker
-pn.state.add_periodic_callback(lambda: rebuild_version_options(update_value=False, triggered_by_user=False), period=2000)
+pn.state.add_periodic_callback(
+    lambda: rebuild_version_options(update_value=False, triggered_by_user=False),
+    period=2000,
+)
 
 # Build layout
 sidebar = pn.Column(
@@ -1087,16 +1183,16 @@ sidebar = pn.Column(
     status_pane,
     task_cards_pane,
     metrics_pane,
-    sizing_mode="stretch_width"
+    sizing_mode="stretch_width",
 )
 
 main = pn.Column(
     pn.Row(activity_pane, search_pane, sizing_mode="stretch_width"),
-    history_controls,     # ← new: filter + version picker
-    report_info_pane,     # ← shows current report index/time/task
-    report_nav_row,       # ← ◀ Previous / Next ▶ navigation
+    history_controls,  # ← new: filter + version picker
+    report_info_pane,  # ← shows current report index/time/task
+    report_nav_row,  # ← ◀ Previous / Next ▶ navigation
     notes_pane,
-    sizing_mode="stretch_width"
+    sizing_mode="stretch_width",
 )
 
 TEMPLATE.sidebar.append(sidebar)

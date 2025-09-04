@@ -1,6 +1,7 @@
 from chromadb import PersistentClient
 from sentence_transformers import SentenceTransformer
 
+
 class MemoryStore:
     def __init__(self, path: str = ".chroma"):
         self.client = PersistentClient(path)
@@ -9,12 +10,14 @@ class MemoryStore:
 
     def add(self, doc_id: str, text: str, meta: dict):
         emb = self.model.encode(text).tolist()
-        self.collection.add(ids=[doc_id], documents=[text], metadatas=[meta], embeddings=[emb])
+        self.collection.add(
+            ids=[doc_id], documents=[text], metadatas=[meta], embeddings=[emb]
+        )
 
     def search(self, query: str, k: int = 5):
         emb = self.model.encode(query).tolist()
         return self.collection.query(query_embeddings=[emb], n_results=k)
-    
+
     def delete_all(self) -> None:
         """Delete everything in this collection (but keep the collection)."""
         self.collection.delete(where={})

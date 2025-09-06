@@ -26,13 +26,17 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="KestrelAI API",
     description="API for autonomous research agent with Redis integration",
-    version="2.0.0"
+    version="2.0.0",
 )
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,25 +47,29 @@ REDIS_URL = "redis://redis:6379"
 REDIS_POOL: Optional[ConnectionPool] = None
 REDIS_CLIENT: Optional[redis.Redis] = None
 
+
 # Redis Queue Names
 class RedisQueues:
     """Redis queue naming convention"""
+
     TASK_COMMANDS = "kestrel:queue:commands"  # Commands to agent
-    TASK_UPDATES = "kestrel:queue:updates"    # Updates from agent
+    TASK_UPDATES = "kestrel:queue:updates"  # Updates from agent
     TASK_ACTIVITIES = "kestrel:queue:activities"  # Activity stream
     TASK_SEARCHES = "kestrel:queue:searches"  # Search queries
-    TASK_REPORTS = "kestrel:queue:reports"    # Generated reports
-    TASK_METRICS = "kestrel:queue:metrics"    # Metrics updates
-    TASK_LOGS = "kestrel:queue:logs"         # Debug logs
-    
+    TASK_REPORTS = "kestrel:queue:reports"  # Generated reports
+    TASK_METRICS = "kestrel:queue:metrics"  # Metrics updates
+    TASK_LOGS = "kestrel:queue:logs"  # Debug logs
+
     @staticmethod
     def task_specific(queue_base: str, task_id: str) -> str:
         """Get task-specific queue name"""
         return f"{queue_base}:{task_id}"
 
+
 # Redis Keys
 class RedisKeys:
     """Redis key patterns"""
+
     TASK_STATE = "kestrel:task:{task_id}:state"
     TASK_METRICS = "kestrel:task:{task_id}:metrics"
     TASK_ACTIVITIES = "kestrel:task:{task_id}:activities"
@@ -69,6 +77,7 @@ class RedisKeys:
     TASK_REPORTS = "kestrel:task:{task_id}:reports"
     ACTIVE_TASKS = "kestrel:tasks:active"
     ALL_TASKS = "kestrel:tasks:all"
+
 
 # Enums
 class TaskStatus(str, Enum):
@@ -89,6 +98,7 @@ class TaskStatus(str, Enum):
                     return member
         return None
 
+
 class CommandType(str, Enum):
     START = "start"
     PAUSE = "pause"
@@ -105,6 +115,7 @@ class CommandType(str, Enum):
                 if member.value == value:
                     return member
         return None
+
 
 class ActivityType(str, Enum):
     TASK_START = "task_start"
@@ -126,6 +137,7 @@ class ActivityType(str, Enum):
                     return member
         return None
 
+
 class ExportFormat(str, Enum):
     JSON = "json"
     PDF = "pdf"
@@ -141,6 +153,7 @@ class ExportFormat(str, Enum):
                     return member
         return None
 
+
 # Models
 class TaskMetrics(BaseModel):
     searchCount: int = 0
@@ -151,6 +164,7 @@ class TaskMetrics(BaseModel):
     llmTokensUsed: int = 0
     errorCount: int = 0
 
+
 class Task(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     name: str
@@ -160,27 +174,40 @@ class Task(BaseModel):
     progress: float = 0.0
     elapsed: int = 0
     metrics: TaskMetrics = Field(default_factory=TaskMetrics)
-    createdAt: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
-    updatedAt: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
+    createdAt: int = Field(
+        default_factory=lambda: int(datetime.now().timestamp() * 1000)
+    )
+    updatedAt: int = Field(
+        default_factory=lambda: int(datetime.now().timestamp() * 1000)
+    )
     config: Dict[str, Any] = Field(default_factory=dict)  # Additional agent config
+
 
 class TaskCommand(BaseModel):
     """Command sent to the agent via Redis"""
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     taskId: str
     type: CommandType
     payload: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
+    timestamp: int = Field(
+        default_factory=lambda: int(datetime.now().timestamp() * 1000)
+    )
+
 
 class TaskUpdate(BaseModel):
     """Update received from the agent via Redis"""
+
     taskId: str
     status: Optional[TaskStatus] = None
     progress: Optional[float] = None
     elapsed: Optional[int] = None
     metrics: Optional[Dict[str, int]] = None
     error: Optional[str] = None
-    timestamp: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
+    timestamp: int = Field(
+        default_factory=lambda: int(datetime.now().timestamp() * 1000)
+    )
+
 
 class ActivityEntry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -189,7 +216,10 @@ class ActivityEntry(BaseModel):
     type: ActivityType
     message: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
+    timestamp: int = Field(
+        default_factory=lambda: int(datetime.now().timestamp() * 1000)
+    )
+
 
 class SearchEntry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -198,16 +228,22 @@ class SearchEntry(BaseModel):
     query: str
     results: int
     sources: List[str] = Field(default_factory=list)
-    timestamp: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
+    timestamp: int = Field(
+        default_factory=lambda: int(datetime.now().timestamp() * 1000)
+    )
+
 
 class Report(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     taskId: str
-    timestamp: int = Field(default_factory=lambda: int(datetime.now().timestamp() * 1000))
+    timestamp: int = Field(
+        default_factory=lambda: int(datetime.now().timestamp() * 1000)
+    )
     title: str
     content: str
     format: str = "markdown"
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
 
 class SystemMetrics(BaseModel):
     llmCalls: int
@@ -218,18 +254,26 @@ class SystemMetrics(BaseModel):
     tokensUsed: int
     estimatedCost: float
 
+
 class OllamaMode(str, Enum):
     local = "local"
     docker = "docker"
+
 
 class Orchestrator(str, Enum):
     hummingbird = "hummingbird"
     kestrel = "kestrel"
     albatross = "albatross"
 
+
 class AppSettings(BaseModel):
-    ollamaMode: OllamaMode = Field(default=OllamaMode.local, description="Where to send Ollama calls")
-    orchestrator: Orchestrator = Field(default=Orchestrator.kestrel, description="Research orchestrator profile")
+    ollamaMode: OllamaMode = Field(
+        default=OllamaMode.local, description="Where to send Ollama calls"
+    )
+    orchestrator: Orchestrator = Field(
+        default=Orchestrator.kestrel, description="Research orchestrator profile"
+    )
+
 
 # Redis Helper Functions
 async def get_redis() -> redis.Redis:
@@ -238,6 +282,7 @@ async def get_redis() -> redis.Redis:
     if not REDIS_CLIENT:
         raise HTTPException(status_code=503, detail="Redis not connected")
     return REDIS_CLIENT
+
 
 async def init_redis():
     """Initialize Redis connection"""
@@ -252,6 +297,7 @@ async def init_redis():
         # Fallback to in-memory storage if Redis is not available
         logger.warning("Running without Redis - using in-memory storage only")
 
+
 async def close_redis():
     """Close Redis connection"""
     global REDIS_CLIENT, REDIS_POOL
@@ -260,29 +306,29 @@ async def close_redis():
     if REDIS_POOL:
         await REDIS_POOL.disconnect()
 
+
 # Task Queue Operations
-async def send_command(task_id: str, command_type: CommandType, payload: Dict[str, Any] = None):
+async def send_command(
+    task_id: str, command_type: CommandType, payload: Dict[str, Any] = None
+):
     """Send command to agent via Redis queue"""
     try:
         r = await get_redis()
-        command = TaskCommand(
-            taskId=task_id,
-            type=command_type,
-            payload=payload or {}
-        )
-        
+        command = TaskCommand(taskId=task_id, type=command_type, payload=payload or {})
+
         # Push to global command queue
         await r.lpush(RedisQueues.TASK_COMMANDS, command.json())
-        
+
         # Also push to task-specific queue for targeted processing
         task_queue = RedisQueues.task_specific(RedisQueues.TASK_COMMANDS, task_id)
         await r.lpush(task_queue, command.json())
-        
+
         logger.info(f"Command sent: {command_type} for task {task_id}")
         return True
     except Exception as e:
         logger.error(f"Failed to send command: {e}")
         return False
+
 
 async def get_task_from_redis(task_id: str) -> Optional[Task]:
     """Get task state from Redis"""
@@ -297,20 +343,21 @@ async def get_task_from_redis(task_id: str) -> Optional[Task]:
         logger.error(f"Failed to get task from Redis: {e}")
         return None
 
+
 async def save_task_to_redis(task: Task):
     """Save task state to Redis"""
     try:
         r = await get_redis()
         key = RedisKeys.TASK_STATE.format(task_id=task.id)
         await r.set(key, task.json())
-        
+
         # Add to task lists
         await r.sadd(RedisKeys.ALL_TASKS, task.id)
         if task.status == TaskStatus.ACTIVE:
             await r.sadd(RedisKeys.ACTIVE_TASKS, task.id)
         else:
             await r.srem(RedisKeys.ACTIVE_TASKS, task.id)
-            
+
         logger.info(f"Task {task.id} saved to Redis")
         return True
     except Exception as e:
@@ -336,13 +383,15 @@ async def process_queues():
                         task.elapsed = update.elapsed
                     if update.metrics:
                         for k, v in update.metrics.items():
-                            if hasattr(task.metrics, k): 
+                            if hasattr(task.metrics, k):
                                 setattr(task.metrics, k, v)
                     task.updatedAt = int(datetime.now().timestamp() * 1000)
                     await save_task_to_redis(task)
                     # Publish update event
-                    await r.publish(f"kestrel:task:{update.taskId}:updates",
-                                     json.dumps({"type": "status", "payload": update.dict()}))
+                    await r.publish(
+                        f"kestrel:task:{update.taskId}:updates",
+                        json.dumps({"type": "status", "payload": update.dict()}),
+                    )
                     logger.info(f"Processed update for task {update.taskId}")
 
             # Process activity entries
@@ -353,8 +402,10 @@ async def process_queues():
                 key = RedisKeys.TASK_ACTIVITIES.format(task_id=entry.taskId)
                 await r.lpush(key, raw)
                 # Publish activity event
-                await r.publish(f"kestrel:task:{entry.taskId}:updates",
-                                 json.dumps({"type": "activity", "payload": entry.dict()}))
+                await r.publish(
+                    f"kestrel:task:{entry.taskId}:updates",
+                    json.dumps({"type": "activity", "payload": entry.dict()}),
+                )
                 logger.info(f"Processed activity for task {entry.taskId}")
 
             # Process search entries
@@ -365,8 +416,10 @@ async def process_queues():
                 key = RedisKeys.TASK_SEARCHES.format(task_id=entry.taskId)
                 await r.lpush(key, raw)
                 # Publish search event
-                await r.publish(f"kestrel:task:{entry.taskId}:updates",
-                                 json.dumps({"type": "search", "payload": entry.dict()}))
+                await r.publish(
+                    f"kestrel:task:{entry.taskId}:updates",
+                    json.dumps({"type": "search", "payload": entry.dict()}),
+                )
                 logger.info(f"Processed search for task {entry.taskId}: {entry.query}")
 
             # Process report entries
@@ -376,8 +429,10 @@ async def process_queues():
                 key = RedisKeys.TASK_REPORTS.format(task_id=entry.taskId)
                 await r.lpush(key, raw)
                 # Publish report event
-                await r.publish(f"kestrel:task:{entry.taskId}:updates",
-                                 json.dumps({"type": "report", "payload": entry.dict()}))
+                await r.publish(
+                    f"kestrel:task:{entry.taskId}:updates",
+                    json.dumps({"type": "report", "payload": entry.dict()}),
+                )
                 logger.info(f"Processed report for task {entry.taskId}")
 
             # Process metrics updates
@@ -389,16 +444,19 @@ async def process_queues():
                     key = RedisKeys.TASK_METRICS.format(task_id=task_id)
                     await r.set(key, raw)
                     # Publish metrics event
-                    await r.publish(f"kestrel:task:{task_id}:updates",
-                                     json.dumps({"type": "metrics", "payload": metrics}))
+                    await r.publish(
+                        f"kestrel:task:{task_id}:updates",
+                        json.dumps({"type": "metrics", "payload": metrics}),
+                    )
                     logger.info(f"Processed metrics for task {task_id}")
-            
+
             # Short sleep to prevent CPU spinning
             await asyncio.sleep(0.1)
-            
+
         except Exception as e:
             logger.error(f"Error processing queues: {e}")
             await asyncio.sleep(1)
+
 
 # In-memory fallback storage (for when Redis is not available)
 tasks_memory: Dict[str, Task] = {}
@@ -408,6 +466,7 @@ reports_memory: Dict[str, List[Report]] = {}
 
 # API Endpoints
 
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -416,8 +475,9 @@ async def root():
         "status": "healthy",
         "service": "KestrelAI API",
         "version": "2.0.0",
-        "redis": redis_status
+        "redis": redis_status,
     }
+
 
 @app.get("/api/v1/tasks", response_model=List[Task])
 async def get_tasks():
@@ -426,16 +486,17 @@ async def get_tasks():
         r = await get_redis()
         task_ids = await r.smembers(RedisKeys.ALL_TASKS)
         tasks = []
-        
+
         for task_id in task_ids:
             task = await get_task_from_redis(task_id)
             if task:
                 tasks.append(task)
-        
+
         return tasks
     except:
         # Fallback to in-memory storage
         return list(tasks_memory.values())
+
 
 @app.get("/api/v1/tasks/{task_id}", response_model=Task)
 async def get_task(task_id: str):
@@ -448,8 +509,9 @@ async def get_task(task_id: str):
         # Fallback to in-memory storage
         if task_id in tasks_memory:
             return tasks_memory[task_id]
-    
+
     raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+
 
 @app.post("/api/v1/tasks", response_model=Task)
 async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTasks):
@@ -459,12 +521,12 @@ async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTas
         description=task_data.get("description", ""),
         budgetMinutes=task_data.get("budgetMinutes", 180),
         status=TaskStatus.CONFIGURING,
-        config=task_data.get("config", {})
+        config=task_data.get("config", {}),
     )
-    
+
     try:
         await save_task_to_redis(task)
-        
+
         # Send creation command to agent
         await send_command(
             task.id,
@@ -473,8 +535,8 @@ async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTas
                 "name": task.name,
                 "description": task.description,
                 "budgetMinutes": task.budgetMinutes,
-                "config": task.config
-            }
+                "config": task.config,
+            },
         )
     except:
         # Fallback to in-memory storage
@@ -482,8 +544,9 @@ async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTas
         activities_memory[task.id] = []
         searches_memory[task.id] = []
         reports_memory[task.id] = []
-    
+
     return task
+
 
 @app.patch("/api/v1/tasks/{task_id}", response_model=Task)
 async def update_task(task_id: str, updates: Dict[str, Any]):
@@ -494,10 +557,10 @@ async def update_task(task_id: str, updates: Dict[str, Any]):
             task = tasks_memory.get(task_id)
     except:
         task = tasks_memory.get(task_id)
-    
+
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
-    
+
     # Update task fields
     for field, value in updates.items():
         if hasattr(task, field) and field not in ["id", "createdAt"]:
@@ -507,34 +570,31 @@ async def update_task(task_id: str, updates: Dict[str, Any]):
                 logger.error(f"Pre-existing Values: {task.metrics}")
             else:
                 setattr(task, field, value)
-    
+
     task.updatedAt = int(datetime.now().timestamp() * 1000)
-    
+
     try:
         await save_task_to_redis(task)
-        
+
         # Send update command to agent if config changed
         if "config" in updates or "description" in updates:
-            await send_command(
-                task_id,
-                CommandType.UPDATE_CONFIG,
-                updates
-            )
+            await send_command(task_id, CommandType.UPDATE_CONFIG, updates)
     except:
         # Fallback to in-memory storage
         tasks_memory[task_id] = task
-    
+
     return task
+
 
 @app.delete("/api/v1/tasks/{task_id}")
 async def delete_task(task_id: str):
     """Delete a task"""
     try:
         r = await get_redis()
-        
+
         # Send stop command to agent
         await send_command(task_id, CommandType.STOP)
-        
+
         # Remove from Redis
         await r.delete(RedisKeys.TASK_STATE.format(task_id=task_id))
         await r.delete(RedisKeys.TASK_METRICS.format(task_id=task_id))
@@ -553,8 +613,9 @@ async def delete_task(task_id: str):
             del searches_memory[task_id]
         if task_id in reports_memory:
             del reports_memory[task_id]
-    
+
     return {"message": "Task deleted successfully"}
+
 
 @app.post("/api/v1/tasks/{task_id}/start", response_model=Task)
 async def start_task(task_id: str):
@@ -565,27 +626,34 @@ async def start_task(task_id: str):
             task = tasks_memory.get(task_id)
     except:
         task = tasks_memory.get(task_id)
-    
+
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
-    
+
     if task.status != TaskStatus.CONFIGURING:
-        raise HTTPException(status_code=400, detail="Task must be in configuring status to start")
-    
+        raise HTTPException(
+            status_code=400, detail="Task must be in configuring status to start"
+        )
+
     task.status = TaskStatus.ACTIVE
     task.updatedAt = int(datetime.now().timestamp() * 1000)
-    
+
     try:
         await save_task_to_redis(task)
-        await send_command(task_id, CommandType.START, {
-            "description": task.description,
-            "budgetMinutes": task.budgetMinutes,
-            "config": task.config
-        })
+        await send_command(
+            task_id,
+            CommandType.START,
+            {
+                "description": task.description,
+                "budgetMinutes": task.budgetMinutes,
+                "config": task.config,
+            },
+        )
     except:
         tasks_memory[task_id] = task
-    
+
     return task
+
 
 @app.post("/api/v1/tasks/{task_id}/pause", response_model=Task)
 async def pause_task(task_id: str):
@@ -596,23 +664,24 @@ async def pause_task(task_id: str):
             task = tasks_memory.get(task_id)
     except:
         task = tasks_memory.get(task_id)
-    
+
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
-    
+
     if task.status != TaskStatus.ACTIVE:
         raise HTTPException(status_code=400, detail="Task is not active")
-    
+
     task.status = TaskStatus.PAUSED
     task.updatedAt = int(datetime.now().timestamp() * 1000)
-    
+
     try:
         await save_task_to_redis(task)
         await send_command(task_id, CommandType.PAUSE)
     except:
         tasks_memory[task_id] = task
-    
+
     return task
+
 
 @app.post("/api/v1/tasks/{task_id}/resume", response_model=Task)
 async def resume_task(task_id: str):
@@ -623,97 +692,108 @@ async def resume_task(task_id: str):
             task = tasks_memory.get(task_id)
     except:
         task = tasks_memory.get(task_id)
-    
+
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
-    
+
     if task.status != TaskStatus.PAUSED:
         raise HTTPException(status_code=400, detail="Task is not paused")
-    
+
     task.status = TaskStatus.ACTIVE
     task.updatedAt = int(datetime.now().timestamp() * 1000)
-    
+
     try:
         await save_task_to_redis(task)
         await send_command(task_id, CommandType.RESUME)
     except:
         tasks_memory[task_id] = task
-    
+
     return task
+
 
 @app.get("/api/v1/tasks/{task_id}/activity", response_model=List[ActivityEntry])
 async def get_task_activity(
     task_id: str,
-    limit: int = Query(50, ge=1, le=200, description="Maximum number of activities to return")
+    limit: int = Query(
+        50, ge=1, le=200, description="Maximum number of activities to return"
+    ),
 ):
     """Get activity feed for a task"""
     try:
         r = await get_redis()
         key = RedisKeys.TASK_ACTIVITIES.format(task_id=task_id)
-        
+
         # Get activities from Redis list
         activities_data = await r.lrange(key, 0, limit - 1)
         activities = [ActivityEntry(**json.loads(data)) for data in activities_data]
-        
+
         return activities
     except:
         # Fallback to in-memory storage or generate mock data
         if task_id in activities_memory:
             return activities_memory[task_id][:limit]
-        
+
         # Generate mock activities if none exist
         mock_activities = []
         base_time = datetime.now()
         for i in range(4):
-            time_offset = base_time - timedelta(minutes=i*2)
-            mock_activities.append(ActivityEntry(
-                taskId=task_id,
-                time=time_offset.strftime("%H:%M:%S"),
-                type=random.choice(list(ActivityType)),
-                message=f"Mock activity {i+1}",
-                timestamp=int(time_offset.timestamp() * 1000)
-            ))
+            time_offset = base_time - timedelta(minutes=i * 2)
+            mock_activities.append(
+                ActivityEntry(
+                    taskId=task_id,
+                    time=time_offset.strftime("%H:%M:%S"),
+                    type=random.choice(list(ActivityType)),
+                    message=f"Mock activity {i+1}",
+                    timestamp=int(time_offset.timestamp() * 1000),
+                )
+            )
         return mock_activities[:limit]
+
 
 @app.get("/api/v1/tasks/{task_id}/searches", response_model=List[SearchEntry])
 async def get_task_search_history(
     task_id: str,
-    limit: int = Query(50, ge=1, le=200, description="Maximum number of searches to return")
+    limit: int = Query(
+        50, ge=1, le=200, description="Maximum number of searches to return"
+    ),
 ):
     """Get search history for a task"""
     try:
         r = await get_redis()
         key = RedisKeys.TASK_SEARCHES.format(task_id=task_id)
-        
+
         # Get searches from Redis list
         searches_data = await r.lrange(key, 0, limit - 1)
         searches = [SearchEntry(**json.loads(data)) for data in searches_data]
-        
+
         return searches
     except:
         # Fallback to in-memory storage or generate mock data
         if task_id in searches_memory:
             return searches_memory[task_id][:limit]
-        
+
         # Generate mock searches
         mock_searches = []
         base_time = datetime.now()
         queries = [
             "AI research grants 2025",
             "Machine learning fellowships undergraduate",
-            "NSF REU programs deadline"
+            "NSF REU programs deadline",
         ]
         for i, query in enumerate(queries):
-            time_offset = base_time - timedelta(minutes=i*5)
-            mock_searches.append(SearchEntry(
-                taskId=task_id,
-                time=time_offset.strftime("%H:%M:%S"),
-                query=query,
-                results=random.randint(5, 25),
-                sources=["google.com", "bing.com"],
-                timestamp=int(time_offset.timestamp() * 1000)
-            ))
+            time_offset = base_time - timedelta(minutes=i * 5)
+            mock_searches.append(
+                SearchEntry(
+                    taskId=task_id,
+                    time=time_offset.strftime("%H:%M:%S"),
+                    query=query,
+                    results=random.randint(5, 25),
+                    sources=["google.com", "bing.com"],
+                    timestamp=int(time_offset.timestamp() * 1000),
+                )
+            )
         return mock_searches[:limit]
+
 
 @app.get("/api/v1/tasks/{task_id}/reports", response_model=List[Report])
 async def get_task_reports(task_id: str):
@@ -721,25 +801,26 @@ async def get_task_reports(task_id: str):
     try:
         r = await get_redis()
         key = RedisKeys.TASK_REPORTS.format(task_id=task_id)
-        
+
         # Get reports from Redis list
         reports_data = await r.lrange(key, 0, -1)
         reports = [Report(**json.loads(data)) for data in reports_data]
-        
+
         return reports
     except:
         # Fallback to in-memory storage or generate mock data
         if task_id in reports_memory:
             return reports_memory[task_id]
-        
+
         # Generate mock report
         mock_report = Report(
             taskId=task_id,
             title="Research Summary",
             content="## Mock Report\nThis is a placeholder report.",
-            format="markdown"
+            format="markdown",
         )
         return [mock_report]
+
 
 @app.get("/api/v1/tasks/{task_id}/metrics", response_model=SystemMetrics)
 async def get_task_metrics(task_id: str):
@@ -747,14 +828,14 @@ async def get_task_metrics(task_id: str):
     try:
         r = await get_redis()
         key = RedisKeys.TASK_METRICS.format(task_id=task_id)
-        
+
         metrics_data = await r.get(key)
         if metrics_data:
             metrics = json.loads(metrics_data)
             return SystemMetrics(**metrics)
     except:
         pass
-    
+
     # Return mock metrics
     return SystemMetrics(
         llmCalls=0,
@@ -763,13 +844,14 @@ async def get_task_metrics(task_id: str):
         summaries=0,
         checkpoints=0,
         tokensUsed=0,
-        estimatedCost=0.0
+        estimatedCost=0.0,
     )
+
 
 @app.get("/api/v1/tasks/{task_id}/export")
 async def export_task(
     task_id: str,
-    format: ExportFormat = Query(ExportFormat.JSON, description="Export format")
+    format: ExportFormat = Query(ExportFormat.JSON, description="Export format"),
 ):
     """Export task data in various formats"""
     try:
@@ -778,34 +860,34 @@ async def export_task(
             task = tasks_memory.get(task_id)
     except:
         task = tasks_memory.get(task_id)
-    
+
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
-    
+
     # Get related data
     activities = await get_task_activity(task_id, limit=200)
     searches = await get_task_search_history(task_id, limit=200)
     reports = await get_task_reports(task_id)
-    
+
     if format == ExportFormat.JSON:
         export_data = {
             "task": task.dict(),
             "activities": [a.dict() for a in activities],
             "searches": [s.dict() for s in searches],
             "reports": [r.dict() for r in reports],
-            "exported_at": datetime.now().isoformat()
+            "exported_at": datetime.now().isoformat(),
         }
-        
+
         content = json.dumps(export_data, indent=2)
-        
+
         return StreamingResponse(
             iter([content]),
             media_type="application/json",
             headers={
                 "Content-Disposition": f"attachment; filename={task.name.replace(' ', '_')}_{task_id}.json"
-            }
+            },
         )
-    
+
     elif format == ExportFormat.MARKDOWN:
         markdown_content = f"""# {task.name}
 
@@ -823,26 +905,28 @@ async def export_task(
 """
         for report in reports:
             markdown_content += f"\n### {report.title}\n{report.content}\n"
-        
+
         return StreamingResponse(
             iter([markdown_content]),
             media_type="text/markdown",
             headers={
                 "Content-Disposition": f"attachment; filename={task.name.replace(' ', '_')}_{task_id}.md"
-            }
+            },
         )
-    
+
     else:
         raise HTTPException(status_code=501, detail="Format not implemented")
 
+
 # WebSocket for real-time updates
 from fastapi import WebSocket, WebSocketDisconnect
+
 
 @app.websocket("/ws/tasks/{task_id}")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
     """WebSocket endpoint for real-time task updates"""
     await websocket.accept()
-    
+
     try:
         while True:
             # Subscribe to task-specific Redis channels for real-time updates
@@ -850,9 +934,9 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                 r = await get_redis()
                 pubsub = r.pubsub()
                 await pubsub.subscribe(f"kestrel:task:{task_id}:updates")
-                
+
                 async for message in pubsub.listen():
-                    if message['type'] == 'message':
+                    if message["type"] == "message":
                         data = message["data"]
                         if isinstance(data, bytes):
                             data = data.decode("utf-8", errors="ignore")
@@ -861,15 +945,13 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                 # Fallback: send periodic updates
                 task = tasks_memory.get(task_id)
                 if task:
-                    await websocket.send_json({
-                        "type": "status",
-                        "data": task.dict()
-                    })
-            
+                    await websocket.send_json({"type": "status", "data": task.dict()})
+
             await asyncio.sleep(5)
-            
+
     except WebSocketDisconnect:
         pass
+
 
 # Background task processor
 async def background_processor():
@@ -882,16 +964,18 @@ async def background_processor():
             logger.error(f"Background processor error: {e}")
         await asyncio.sleep(1)
 
+
 # Startup and shutdown events
 @app.on_event("startup")
 async def startup_event():
     """Initialize Redis and start background tasks"""
     await init_redis()
-    
+
     # Start background processor
     asyncio.create_task(background_processor())
-    
+
     logger.info("KestrelAI API started with Redis integration")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -899,6 +983,8 @@ async def shutdown_event():
     await close_redis()
     logger.info("KestrelAI API shutdown complete")
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

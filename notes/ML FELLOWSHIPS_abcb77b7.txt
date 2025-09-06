@@ -1,0 +1,45 @@
+## Knowledge Checkpoint: AI/ML Research Funding Opportunities for Senior Undergraduates (US - 2024-2025)
+
+**What Has Been Discovered So Far:**
+
+Currently, several funding opportunities are available to support AI/ML research for senior undergraduate students in the United States. These primarily revolve around NSF’s Research Experiences for Undergraduates (REU) program and specific AI Research Institutes initiatives. Key findings include:
+
+* **NSF National Artificial Intelligence Research Institutes (AI Institutes):** This remains the *most* significant avenue, offering research opportunities within various institutes focusing on areas like AI for Climate Change, Computational Creativity, and Trustworthy AI. *Crucially, the application deadlines for these institutes are generally earlier in the year (typically Fall/Winter).*
+* **NSF REU Program:** A broader program offering research experiences, with a strong emphasis on AI/ML projects.
+* **Google DeepMind Education Programs:** While not explicitly a grant, Google DeepMind offers educational resources and potentially future funding streams focused on AI/ML education and research. Their focus seems to be on *skills development* rather than direct research funding at this stage.
+* **University-Specific Funding:** Several universities (Cincinnati, Brown, UMBC, Princeton, RIT, Worcester Polytechnic Institute, and increasingly, smaller institutions) are offering their own research funding opportunities, often linked to specific labs or projects. *Note: Many of these are smaller, project-based grants.*
+* **Smaller, Focused Programs:** Several smaller, more targeted programs are emerging, such as those offered by the Data Science Institute at Columbia University and the Simons Foundation.
+
+**Key Sources and Evidence:**
+
+* **National Science Foundation (NSF):** [https://www.nsf.gov/](https://www.nsf.gov/) - The primary source for REU and AI Institute funding. Specifically, explore:
+    * NSF 23-610: National Artificial Intelligence (AI) Research Institutes – *Pay close attention to application deadlines.*
+    * NSF 24-508: Emerging Frontiers in Research and Innovation (EFRI) – potentially relevant for innovative AI projects.
+* **University Research Websites:** Check the research websites of universities offering AI/ML labs (e.g., Cincinnati, Brown, UMBC, Princeton, RIT, Worcester Polytechnic Institute, Columbia, Simons Foundation) for specific project funding. *Prioritize those with active AI/ML labs.*
+* **Google DeepMind:** [https://deepmind.google/](https://deepmind.google/) - Monitor their education and research initiatives.
+* **Simons Foundation:** [https://www.simonsfoundation.org/](https://www.simonsfoundation.org/) - Specifically, look for funding related to their AI research programs.
+
+**Current Research Focus:**
+
+The dominant research areas receiving funding are:
+
+* Climate Change AI: Utilizing AI/ML for climate modeling, prediction, and mitigation strategies.
+* Computational Creativity: Exploring AI’s role in artistic creation, music composition, and design.
+* Trustworthy AI: Developing AI systems that are fair, transparent, and reliable, addressing ethical concerns.
+* AI for Scientific Discovery: Applying AI/ML to accelerate research in various scientific domains (e.g., biology, chemistry, physics).
+* Generative AI Research: Increasingly, research is focused on generative models (e.g., diffusion models, transformers) – this is a rapidly evolving area.
+
+**Unexplored Areas or Questions:**
+
+* Smaller, Seed-Funded Projects: There appears to be less emphasis on smaller, independent research projects focused on novel AI/ML techniques. Identifying these opportunities requires deeper investigation of individual university labs.
+* Industry Partnerships: Exploring funding opportunities that involve collaborations with AI/ML companies – this is currently less documented but a potentially valuable avenue. Targeting companies known for their AI research and open-source initiatives.
+* Specific Hardware/Software Access: Funding structures often don’t explicitly address access to specialized AI/ML hardware (e.g., GPUs) and software licenses. This needs to be considered when evaluating projects. Inquire directly about access to computing resources.
+* International Opportunities: While primarily focused on US institutions, investigating if any international collaborations or funding programs are accessible to US undergraduates would be beneficial. Consider programs that allow for international collaboration.
+
+**Action Items for Future Research (Prioritized):**
+
+1. Targeted University Lab Research (Highest Priority): Create a spreadsheet listing 10-15 universities with active AI/ML labs and systematically investigate their funding structures and project opportunities. Focus on labs with a strong track record of supporting undergraduate research.
+2. NSF AI Institutes - Deadline Monitoring: Set reminders for the upcoming NSF AI Institute application deadlines. Start preliminary research on institute projects to identify potential alignment.
+3. Deep Dive on Simons Foundation: Thoroughly explore the Simons Foundation’s AI research programs and funding opportunities.
+4. Industry Outreach (Medium Priority): Identify 3-5 AI/ML companies with open-source initiatives and research programs and explore potential collaboration opportunities.
+5. Resource Access Inquiry (Low Priority): When evaluating projects, proactively inquire about access to computing resources (GPUs, software licenses).

@@ -1,45 +1,1605 @@
-from datetime import datetime, timedelta
-from .base import LlmWrapper
-from shared.models import Task
 
-ORCH_INSTRUCTIONS = """
-You are a project manager. Balance progress across tasks and avoid
-getting stuck. If good progress is being made, don't interrupt it. Return JSON with keys:
-{{
-  "reasoning": perform reasoning about what decision to make
-  "decision": "continue" | "switch" | "done",
-  "next_task": "name_of_task"
-}}
+"""
+Kestrel LangGraph Orchestrator (v3) - Complete Rewrite (Hardened + Phase Sanitizer + Grounded Summary)
+
+Key improvements:
+- Multi-phase planning with task decomposition
+- Continuous feedback loops with quality evaluation
+- Adaptive execution based on research progress
+- Context-aware state management
+- Intelligent routing and decision-making
+- Single-step execution to avoid recursion issues
+
+HARDENING CHANGES:
+- Subtask.id is auto-generated; Subtask.task_id defaults and is filled post-parse
+- ResearchPlan.dependencies has a safe default
+- Planner post-processing fills task_id, ids, priorities, and normalizes dependencies
+- Robust fallback plan on planner failure
+- Planner prompt explicitly tells the model NOT to include id/task_id for Subtasks
+- Router phase sanitizer to prevent KeyError on malformed phase strings (e.g., '\n  "analysis"')
+
+SUMMARY CHANGES:
+- Canonical research_corpus captures ALL AgentUpdates (including partial/in-progress)
+- get_research_summary() now reads from corpus (not just completed subtasks)
+- LLM-backed and deterministic summary paths; sources deduped and listed
 """
 
-class Orchestrator:
-    def __init__(self, tasks: list[Task], llm: LlmWrapper, slice_minutes: int = 15):
-        self.tasks = {t.name: t for t in tasks}
-        self.llm = llm
-        self.slice = timedelta(minutes=slice_minutes)
-        self.current = tasks[0].name
+from __future__ import annotations
 
-    def _review(self, task: Task, latest_notes: str) -> dict:
-        msg = [
-            {"role": "system", "content": ORCH_INSTRUCTIONS},
-            {"role": "user", "content": f"Current time: {datetime.now()}\n"
-                                        f"Task statuses: {[ (t.name, t.status) for t in self.tasks.values() ]}\n"
-                                        f"Latest update for {task.name}:\n{latest_notes}"},
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, Union
+from uuid import uuid4
+import json
+from collections import defaultdict
+
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+
+from pydantic import BaseModel, Field
+from langchain_core.messages import SystemMessage, HumanMessage
+
+
+# --------------------------------------------------------------------------------------
+# Types & Schemas (Enhanced + Hardened)
+# --------------------------------------------------------------------------------------
+
+class TaskStatus(str, Enum):
+    NEW = "new"
+    ANALYZING = "analyzing"
+    PLANNING = "planning"
+    EXECUTING = "executing"
+    EVALUATING = "evaluating"
+    REFINING = "refining"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+class SubtaskStatus(str, Enum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    IN_PROGRESS = "in_progress"
+    UNDER_REVIEW = "under_review"
+    NEEDS_REVISION = "needs_revision"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+
+
+class ResearchStrategy(str, Enum):
+    BROAD_SURVEY = "broad_survey"
+    DEEP_DIVE = "deep_dive"
+    COMPARATIVE = "comparative"
+    FACT_FINDING = "fact_finding"
+    EXPLORATORY = "exploratory"
+    SYSTEMATIC_REVIEW = "systematic_review"
+
+
+class QualityDimension(str, Enum):
+    RELEVANCE = "relevance"
+    COMPLETENESS = "completeness"
+    ACCURACY = "accuracy"
+    DEPTH = "depth"
+    COHERENCE = "coherence"
+    EVIDENCE_QUALITY = "evidence_quality"
+
+
+class TaskSpec(BaseModel):
+    id: str
+    name: str
+    description: str
+    objectives: List[str] = []
+    constraints: List[str] = []
+    deadline: Optional[datetime] = None
+    priority: int = 3
+    status: TaskStatus = TaskStatus.NEW
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentSpec(BaseModel):
+    id: str
+    role: str = "researcher"
+    model: Optional[str] = None
+    tools: List[str] = []
+    max_tokens: Optional[int] = None
+    rate_limit_qpm: Optional[int] = None
+    capabilities: List[str] = []
+    performance_history: Dict[str, float] = Field(default_factory=dict)
+
+
+class Subtask(BaseModel):
+    # Hardened: auto-generate id; task_id filled later
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    task_id: str = ""
+    title: str
+    description: str = ""
+    research_questions: List[str] = []
+    owner_agent_id: Optional[str] = None
+    dependencies: List[str] = []
+    acceptance_criteria: List[str] = []
+    status: SubtaskStatus = SubtaskStatus.PENDING
+    strategy: ResearchStrategy = ResearchStrategy.BROAD_SURVEY
+    priority: int = 5
+    estimated_effort: int = 1  # 1-10 scale
+    actual_effort: int = 0
+    quality_scores: Dict[QualityDimension, float] = Field(default_factory=dict)
+    feedback_history: List[Dict[str, Any]] = Field(default_factory=list)
+    iteration_count: int = 0
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchPlan(BaseModel):
+    """Comprehensive research plan generated by planner"""
+    task_id: str = ""
+    overall_strategy: ResearchStrategy
+    subtasks: List[Subtask]
+    dependencies: Dict[str, List[str]] = Field(default_factory=dict)  # subtask_id/title -> [dependency ids/titles]
+    estimated_duration: int  # minutes
+    key_resources: List[str] = []
+    risk_factors: List[str] = []
+
+
+class ExecutionContext(BaseModel):
+    """Rich context passed to agents"""
+    task: TaskSpec
+    subtask: Subtask
+    related_findings: List[str] = []
+    prior_attempts: List[Dict[str, Any]] = []
+    global_context: str = ""
+    quality_feedback: Optional[str] = None
+    suggested_approaches: List[str] = []
+    avoided_queries: List[str] = []
+
+
+class QualityAssessment(BaseModel):
+    """Detailed quality evaluation"""
+    subtask_id: str
+    timestamp: datetime
+    scores: Dict[QualityDimension, float]
+    overall_score: float
+    strengths: List[str]
+    weaknesses: List[str]
+    missing_elements: List[str]
+    recommendations: List[str]
+    meets_criteria: bool
+
+
+class OrchDecision(BaseModel):
+    timestamp: datetime
+    decision_type: str
+    rationale: str
+    confidence: float = 0.8
+    task_id: Optional[str] = None
+    subtask_id: Optional[str] = None
+    next_action: Optional[str] = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentUpdate(BaseModel):
+    """Enhanced agent update with richer information"""
+    timestamp: datetime
+    task_id: str
+    subtask_id: str
+    agent_id: str
+    progress: Literal["none", "partial", "good", "complete"]
+    findings: str = ""
+    sources: List[str] = []
+    blockers: List[str] = []
+    proposed_next: List[str] = []
+    confidence: float = 0.7
+    key_insights: List[str] = []
+    methodology_notes: str = ""
+
+
+class StepBudget(BaseModel):
+    """Enhanced budget with more control"""
+    max_actions: int = 6
+    max_seconds: Optional[int] = None
+    max_searches: Optional[int] = None
+    max_summaries: Optional[int] = None
+    min_quality_score: float = 0.7
+    require_evidence: bool = True
+
+
+# --------------------------------------------------------------------------------------
+# Enhanced Registries with Rich Functionality
+# --------------------------------------------------------------------------------------
+
+@dataclass
+class AgentRegistry:
+    agents: Dict[str, AgentSpec] = field(default_factory=dict)
+    
+    def add(self, agent_id: str, spec: AgentSpec) -> None:
+        self.agents[agent_id] = spec
+    
+    def get(self, agent_id: str) -> Optional[AgentSpec]:
+        return self.agents.get(agent_id)
+    
+    def list_all(self) -> List[AgentSpec]:
+        return list(self.agents.values())
+
+
+@dataclass
+class TaskRegistry:
+    tasks: Dict[str, TaskSpec] = field(default_factory=dict)
+    task_history: Dict[str, List[Dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    
+    def add(self, spec: TaskSpec) -> None:
+        self.tasks[spec.id] = spec
+        self._log_event(spec.id, "created", {"status": spec.status})
+    
+    def get(self, task_id: str) -> Optional[TaskSpec]:
+        return self.tasks.get(task_id)
+    
+    def update_status(self, task_id: str, status: TaskStatus) -> None:
+        if task_id in self.tasks:
+            old_status = self.tasks[task_id].status
+            self.tasks[task_id].status = status
+            self._log_event(task_id, "status_changed", {"from": old_status, "to": status})
+    
+    def list_active(self) -> List[TaskSpec]:
+        return [
+            t for t in self.tasks.values() 
+            if t.status not in (TaskStatus.COMPLETE, TaskStatus.FAILED)
         ]
-        raw = self.llm.chat(msg)
-        import json, re
-        json_part = re.search(r"{.*}", raw, re.S)
-        return json.loads(json_part.group(0)) if json_part else {"decision": "continue"}
+    
+    def _log_event(self, task_id: str, event_type: str, data: Dict[str, Any]) -> None:
+        self.task_history[task_id].append({
+            "timestamp": datetime.utcnow().isoformat(),
+            "event": event_type,
+            "data": data
+        })
 
-    def next_action(self, task: Task, notes: str):
-        review = self._review(task, notes)
-        decision = review["decision"]
 
-        print(f"The decision is {review}")
+@dataclass
+class PlanRegistry:
+    subtasks: Dict[str, Subtask] = field(default_factory=dict)
+    plans: Dict[str, ResearchPlan] = field(default_factory=dict)
+    by_task: Dict[str, List[str]] = field(default_factory=lambda: defaultdict(list))
+    dependency_graph: Dict[str, List[str]] = field(default_factory=lambda: defaultdict(list))
+    
+    def add_plan(self, plan: ResearchPlan) -> None:
+        self.plans[plan.task_id] = plan
+        for st in plan.subtasks:
+            self.add_subtask(st)
+        # dependencies will be set by the orchestrator's normalization
+        for st_id, deps in plan.dependencies.items():
+            self.dependency_graph[st_id] = deps
+    
+    def add_subtask(self, st: Subtask) -> None:
+        self.subtasks[st.id] = st
+        self.by_task[st.task_id].append(st.id)
+    
+    def get_executable_subtasks(self, task_id: str) -> List[Subtask]:
+        """Get subtasks that are ready to execute (dependencies met)"""
+        subtask_ids = self.by_task.get(task_id, [])
+        ready = []
+        
+        for sid in subtask_ids:
+            st = self.subtasks.get(sid)
+            if not st:
+                continue
+                
+            if st.status in (SubtaskStatus.COMPLETE, SubtaskStatus.FAILED):
+                continue
+                
+            deps_met = all(
+                self.subtasks[dep_id].status == SubtaskStatus.COMPLETE 
+                for dep_id in self.dependency_graph.get(st.id, [])
+                if dep_id in self.subtasks
+            )
+            
+            if deps_met:
+                ready.append(st)
+                
+        return ready
+    
+    def get_related_findings(self, subtask_id: str) -> List[str]:
+        """Get findings from related completed subtasks"""
+        st = self.subtasks.get(subtask_id)
+        if not st:
+            return []
+            
+        related = []
+        for other_id in self.by_task.get(st.task_id, []):
+            other = self.subtasks.get(other_id)
+            if other and other.status == SubtaskStatus.COMPLETE:
+                if other.metadata.get("findings"):
+                    related.extend(other.metadata["findings"])
+                    
+        return related[:10]  # Limit to most recent
 
-        if decision == "switch":
-            self.current = review["next_task"]
-        elif decision == "done":
-            task.status = "done"
-            remaining = [t for t in self.tasks.values() if t.status != "done"]
-            self.current = remaining[0].name if remaining else None
+
+@dataclass
+class QualityTracker:
+    """Track quality metrics across subtasks and tasks"""
+    assessments: Dict[str, List[QualityAssessment]] = field(default_factory=lambda: defaultdict(list))
+    task_scores: Dict[str, float] = field(default_factory=dict)
+    
+    def add_assessment(self, assessment: QualityAssessment) -> None:
+        self.assessments[assessment.subtask_id].append(assessment)
+    
+    def get_latest_score(self, subtask_id: str) -> Optional[float]:
+        if subtask_id in self.assessments and self.assessments[subtask_id]:
+            return self.assessments[subtask_id][-1].overall_score
+        return None
+    
+    def calculate_task_score(self, task_id: str, plans: PlanRegistry) -> float:
+        scores = []
+        for sid in plans.by_task.get(task_id, []):
+            score = self.get_latest_score(sid)
+            if score is not None:
+                scores.append(score)
+        return sum(scores) / len(scores) if scores else 0.0
+
+
+# --------------------------------------------------------------------------------------
+# Enhanced Prompts (Hardened Planner Instructions)
+# --------------------------------------------------------------------------------------
+
+PLANNER_SYS_PROMPT = """You are the Kestrel Strategic Research Planner.
+
+Your job:
+1) Analyze the task and decompose it into 3-7 high-quality subtasks.
+2) Choose an overall strategy and a strategy per subtask.
+3) Define acceptance criteria and logical dependencies.
+4) Estimate total duration and list key resources and risks.
+
+IMPORTANT OUTPUT RULES:
+- Return JSON ONLY that matches the schema described below.
+- For each Subtask: DO NOT include 'id' or 'task_id'; they will be assigned by the system.
+- Use strategy enum literals exactly: ["broad_survey","deep_dive","comparative","fact_finding","exploratory","systematic_review"].
+- In 'dependencies', you may reference subtasks by exact subtask TITLE (preferred) or by their implicit index (e.g., "1", "2") — IDs will be resolved later.
+
+Schema (conceptual):
+ResearchPlan {
+  task_id: string  (fill with the given task_id if provided; otherwise empty string)
+  overall_strategy: enum
+  estimated_duration: integer minutes
+  key_resources: string[]
+  risk_factors: string[]
+  dependencies: { [subtask_title_or_placeholder]: string[] of titles/placeholders it depends on }
+  subtasks: Subtask[]
+}
+
+Subtask {
+  title: string
+  description: string
+  research_questions: string[]
+  acceptance_criteria: string[]
+  strategy: enum
+}
+"""
+
+
+QUALITY_EVALUATOR_PROMPT = """You are the Kestrel Research Quality Evaluator. Assess the research output on these dimensions:
+
+1. RELEVANCE: Does it address the core questions?
+2. COMPLETENESS: Are all aspects covered?
+3. ACCURACY: Is the information reliable and well-sourced?
+4. DEPTH: Is there sufficient detail and analysis?
+5. COHERENCE: Is it well-organized and logical?
+6. EVIDENCE_QUALITY: Are sources credible and diverse?
+
+Provide specific feedback and actionable recommendations."""
+
+
+ORCHESTRATOR_POLICY_PROMPT = """You are the Kestrel Orchestration Policy Engine. Based on current state:
+
+1. Evaluate progress and quality
+2. Identify bottlenecks or issues
+3. Decide on the best next action
+4. Provide specific guidance
+
+Possible decisions:
+- continue: Keep current approach (high confidence in progress)
+- refine: Request improvements (quality below threshold)
+- pivot: Change strategy (current approach ineffective)
+- escalate: Increase resources (complex challenge)
+- complete: Mark as done (criteria fully met)
+- abort: Stop and reassess (fundamental issues)
+- switch: Pause this subtask and work on another ready one
+"""
+
+
+CONTEXT_BUILDER_PROMPT = """You are the Kestrel Context Builder. Synthesize relevant context for the research agent including:
+
+1. Key findings from related subtasks
+2. Successful strategies used so far
+3. Failed approaches to avoid
+4. Critical gaps in current knowledge
+5. Specific areas needing focus
+
+Keep it concise but comprehensive."""
+
+
+SUMMARY_SYS_PROMPT = """You are the Kestrel Research Summarizer.
+Write a clear, factual, human-readable research brief grounded ONLY in the provided corpus.
+Structure:
+- Executive Summary (3-6 bullets)
+- Findings by Subtask (use latest + key history)
+- Risks / Gaps
+- Recommended Next Steps
+- Sources (enumerated)
+
+Rules:
+- Do not invent facts; if evidence is weak, say so.
+- Prefer short paragraphs and bullet lists.
+- When listing sources, just enumerate them [1], [2], ... (no URLs required if unavailable).
+"""
+
+
+# --------------------------------------------------------------------------------------
+# Enhanced State with Richer Information
+# --------------------------------------------------------------------------------------
+
+class OrchState(TypedDict, total=False):
+    # Core state
+    current_task_id: Optional[str]
+    current_subtask_id: Optional[str]
+    current_phase: str  # analyzing, planning, executing, evaluating
+    
+    # Execution tracking
+    iteration_count: int
+    total_iterations: Dict[str, int]  # subtask_id -> count
+    
+    # Research context
+    global_context: str
+    research_focus: str
+    key_findings: List[str]
+    
+    # Quality tracking
+    quality_assessments: List[Dict[str, Any]]
+    quality_threshold: float
+    
+    # Decision history
+    decisions: List[Dict[str, Any]]
+    last_decision: Optional[Dict[str, Any]]
+    
+    # Agent performance
+    agent_updates: List[Dict[str, Any]]
+    agent_performance: Dict[str, Dict[str, float]]
+    
+    # Planning
+    current_plan: Optional[Dict[str, Any]]
+    plan_adjustments: List[Dict[str, Any]]
+    
+    # Budgets and constraints
+    step_budget: Dict[str, Any]
+    time_spent: Dict[str, float]  # subtask_id -> minutes
+    
+    # Research corpus & reporting
+    research_corpus: Dict[str, List[Dict[str, Any]]]  # task_id -> list of entries
+    latest_summary: Optional[str]
+    
+    # Metadata
+    started_at: str
+    last_checkpoint: str
+    checkpoint_count: int
+
+
+# --------------------------------------------------------------------------------------
+# Utilities: Phase normalization
+# --------------------------------------------------------------------------------------
+
+_VALID_PHASES = {
+    "analyzing": "analysis",
+    "analysis": "analysis",
+    "planning": "planning",
+    "assignment": "assignment",
+    "executing": "execution",
+    "execution": "execution",
+    "evaluating": "evaluation",
+    "evaluation": "evaluation",
+    "policy": "policy",
+    "synthesis": "synthesis",
+    "complete": "complete",
+}
+
+def _normalize_phase(value: Any) -> str:
+    """
+    Coerce arbitrary values like '\\n  \"analysis\"' or '\"planning\"' into canonical router keys.
+    - Strips whitespace and surrounding quotes.
+    - Lowercases.
+    - Maps synonyms to node names.
+    Falls back to 'analysis' if unrecognized.
+    """
+    if value is None:
+        return "analysis"
+    s = str(value).strip()
+    # strip a pair of surrounding quotes if present
+    if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
+        s = s[1:-1].strip()
+    s = s.lower()
+    return _VALID_PHASES.get(s, "analysis")
+
+
+# --------------------------------------------------------------------------------------
+# Advanced Node Implementations
+# --------------------------------------------------------------------------------------
+
+def make_router_node():
+    """Router node that routes based on phase"""
+    def router_node(state: OrchState) -> OrchState:
+        # Ensure current_phase is normalized as early as possible
+        state["current_phase"] = _normalize_phase(state.get("current_phase", "analysis"))
+        return state
+    return router_node
+
+
+def make_analysis_node(tasks: TaskRegistry, llm_wrapper):
+    """Initial task analysis and context building"""
+    def analysis_node(state: OrchState) -> OrchState:
+        task_id = state.get("current_task_id")
+        if not task_id:
+            state["current_phase"] = "complete"  # No task to analyze
+            return state
+            
+        task = tasks.get(task_id)
+        if not task:
+            state["current_phase"] = "complete"  # Task not found
+            return state
+            
+        if task.status == TaskStatus.NEW:
+            # Analyze task complexity and requirements
+            analysis_prompt = f"""
+            Analyze this research task:
+            
+            Task: {task.name}
+            Description: {task.description}
+            Objectives: {json.dumps(task.objectives)}
+            Constraints: {json.dumps(task.constraints)}
+            
+            Provide:
+            1. Key research questions
+            2. Scope and boundaries
+            3. Potential challenges
+            4. Recommended approach
+            """
+            
+            analysis = ""
+            if llm_wrapper:
+                try:
+                    analysis = llm_wrapper.chat([
+                        {"role": "system", "content": "You are a research analyst. Be thorough and specific."},
+                        {"role": "user", "content": analysis_prompt}
+                    ])
+                except Exception as e:
+                    print(f"Analysis failed: {e}")
+                    analysis = f"Task: {task.name}\nDescription: {task.description}"
+            
+            task.metadata["initial_analysis"] = analysis
+            tasks.update_status(task_id, TaskStatus.PLANNING)  # Move to planning status
+            state["research_focus"] = analysis[:500] if analysis else task.description
+            
+        # Always move to planning after analysis
+        state["current_phase"] = "planning"
+        return state
+    return analysis_node
+
+
+def make_planning_node(tasks: TaskRegistry, plans: PlanRegistry, planner_model):
+    """Create comprehensive research plan with subtasks, robust to schema errors"""
+    def planning_node(state: OrchState) -> OrchState:
+        task_id = state.get("current_task_id")
+        if not task_id:
+            return state
+            
+        task = tasks.get(task_id)
+        if not task or task_id in plans.plans:
+            # If no task or plan already exists, skip to assignment
+            state["current_phase"] = "assignment"
+            return state
+            
+        # Build planning context
+        context = {
+            "task": task.model_dump(),
+            "initial_analysis": task.metadata.get("initial_analysis", ""),
+            "research_focus": state.get("research_focus", "")
+        }
+        
+        # Generate research plan
+        if planner_model is None:
+            # If no planner model, create a default subtask
+            default_subtask = Subtask(
+                task_id=task_id,
+                title="Research " + task.name,
+                description=task.description,
+                research_questions=["What information is available about this topic?"],
+                strategy=ResearchStrategy.BROAD_SURVEY
+            )
+            plan = ResearchPlan(
+                task_id=task_id,
+                overall_strategy=ResearchStrategy.BROAD_SURVEY,
+                subtasks=[default_subtask],
+                estimated_duration=60,
+            )
+        else:
+            try:
+                structured_planner = planner_model.with_structured_output(ResearchPlan)
+                plan: ResearchPlan = structured_planner.invoke([
+                    SystemMessage(content=PLANNER_SYS_PROMPT),
+                    HumanMessage(content=json.dumps(context, default=str))
+                ])
+
+                # ---- Post-processing / normalization ----
+
+                # Ensure task_id present
+                if not plan.task_id:
+                    plan.task_id = task_id
+
+                # Ensure subtasks have task_id, id, metadata, and prioritized order
+                for i, st in enumerate(plan.subtasks):
+                    if not st.task_id:
+                        st.task_id = task_id
+                    # Priority: earlier items higher priority
+                    st.priority = 10 - i
+                    st.metadata["planned_at"] = datetime.utcnow().isoformat()
+
+                # Normalize dependencies to subtask ids
+                title_to_id = {st.title: st.id for st in plan.subtasks}
+                index_to_id = {str(i + 1): st.id for i, st in enumerate(plan.subtasks)}
+                all_ids = set(title_to_id.values())
+
+                fixed_deps: Dict[str, List[str]] = defaultdict(list)
+
+                for target_key, dep_list in (plan.dependencies or {}).items():
+                    target_id = title_to_id.get(target_key) or index_to_id.get(target_key) or target_key
+                    if target_id in title_to_id:
+                        target_id = title_to_id[target_id]
+                    if target_id not in all_ids:
+                        continue  # unknown target, skip
+
+                    normalized: List[str] = []
+                    for dep in dep_list or []:
+                        dep_id = title_to_id.get(dep) or index_to_id.get(dep) or dep
+                        if dep_id in title_to_id:
+                            dep_id = title_to_id[dep_id]
+                        if dep_id in all_ids and dep_id != target_id:
+                            normalized.append(dep_id)
+
+                    # de-dup while preserving order
+                    seen = set()
+                    deduped = []
+                    for x in normalized:
+                        if x not in seen:
+                            seen.add(x)
+                            deduped.append(x)
+                    fixed_deps[target_id] = deduped
+
+                # Ensure every subtask exists in dependency map
+                for st in plan.subtasks:
+                    fixed_deps.setdefault(st.id, [])
+
+                plan.dependencies = dict(fixed_deps)
+
+                # Fallback: if planner returned zero subtasks, inject one
+                if not plan.subtasks:
+                    plan.subtasks = [Subtask(
+                        task_id=task_id,
+                        title=f"Research {task.name}",
+                        description=task.description,
+                        research_questions=["What information is available about this topic?"],
+                        strategy=ResearchStrategy.BROAD_SURVEY,
+                    )]
+                    if not plan.overall_strategy:
+                        plan.overall_strategy = ResearchStrategy.BROAD_SURVEY
+                    if not plan.estimated_duration:
+                        plan.estimated_duration = 60
+
+            except Exception as e:
+                # Hard fallback to a safe default plan
+                print(f"[Planner] Structured output failed; falling back. Error: {e}")
+                default_subtask = Subtask(
+                    task_id=task_id,
+                    title=f"Research {task.name}",
+                    description=task.description,
+                    research_questions=["What information is available about this topic?"],
+                    strategy=ResearchStrategy.BROAD_SURVEY,
+                )
+                plan = ResearchPlan(
+                    task_id=task_id,
+                    overall_strategy=ResearchStrategy.BROAD_SURVEY,
+                    subtasks=[default_subtask],
+                    estimated_duration=60,
+                )
+        
+        # Enrich and register the plan
+        for i, st in enumerate(plan.subtasks):
+            st.priority = 10 - i
+            st.metadata["planned_at"] = st.metadata.get("planned_at") or datetime.utcnow().isoformat()
+
+        # Register with plan registry
+        try:
+            plans.add_plan(plan)
+        except Exception as e:
+            # As a last resort, keep a single default subtask
+            print(f"[PlanRegistry] add_plan failed; retrying with default subtask. Error: {e}")
+            default_subtask = Subtask(
+                task_id=task_id,
+                title=f"Research {task.name}",
+                description=task.description,
+                research_questions=["What information is available about this topic?"],
+                strategy=ResearchStrategy.BROAD_SURVEY,
+            )
+            fallback_plan = ResearchPlan(
+                task_id=task_id,
+                overall_strategy=ResearchStrategy.BROAD_SURVEY,
+                subtasks=[default_subtask],
+                estimated_duration=60,
+                dependencies={}
+            )
+            plans.add_plan(fallback_plan)
+            plan = fallback_plan  # for state below
+
+        tasks.update_status(task_id, TaskStatus.PLANNING)
+        
+        state["current_plan"] = plan.model_dump()
+        state["current_phase"] = "assignment"  # Move to assignment after planning
+        
+        # Log planning decision
+        decision = OrchDecision(
+            timestamp=datetime.utcnow(),
+            decision_type="plan_created",
+            rationale=f"Created research plan with {len(plan.subtasks)} subtasks",
+            task_id=task_id,
+            parameters={"subtask_count": len(plan.subtasks)}
+        )
+        state.setdefault("decisions", []).append(decision.model_dump())
+        
+        return state
+    return planning_node
+
+
+def make_assignment_node(tasks: TaskRegistry, agents: AgentRegistry, plans: PlanRegistry, quality: QualityTracker):
+    """Intelligent subtask assignment based on dependencies and performance"""
+    def assignment_node(state: OrchState) -> OrchState:
+        task_id = state.get("current_task_id")
+        if not task_id:
+            return state
+            
+        # Get executable subtasks
+        ready_subtasks = plans.get_executable_subtasks(task_id)
+        if not ready_subtasks:
+            # No more subtasks - check if we're done
+            all_complete = all(
+                plans.subtasks[sid].status == SubtaskStatus.COMPLETE
+                for sid in plans.by_task.get(task_id, [])
+                if sid in plans.subtasks
+            )
+            if all_complete and plans.by_task.get(task_id):
+                tasks.update_status(task_id, TaskStatus.COMPLETE)
+                state["current_phase"] = "complete"
+            else:
+                # Some subtasks failed or blocked
+                state["current_phase"] = "synthesis"
+            return state
+            
+        # Prioritize based on multiple factors
+        def priority_score(st: Subtask) -> float:
+            base_score = st.priority
+            
+            # Boost if other subtasks depend on this
+            dependency_boost = len([
+                s for s in plans.by_task.get(task_id, [])
+                if st.id in plans.dependency_graph.get(s, [])
+            ]) * 2
+            
+            # Penalize if already attempted multiple times
+            attempt_penalty = st.iteration_count * 1.5
+            
+            # Consider quality feedback
+            quality_score = quality.get_latest_score(st.id) or 0.5
+            quality_factor = (1 - quality_score) * 5  # Boost low quality items
+            
+            return base_score + dependency_boost + quality_factor - attempt_penalty
+        
+        ready_subtasks.sort(key=priority_score, reverse=True)
+        selected = ready_subtasks[0]
+        
+        # Assign agent based on performance history
+        if agents.agents:
+            # Simple assignment for now - can be enhanced with capability matching
+            selected.owner_agent_id = next(iter(agents.agents.keys()))
+            
+        selected.status = SubtaskStatus.ACTIVE
+        selected.iteration_count += 1
+        
+        state["current_subtask_id"] = selected.id
+        state["current_phase"] = "executing"
+        state.setdefault("total_iterations", {})[selected.id] = selected.iteration_count
+        
+        # Build execution context
+        exec_context = ExecutionContext(
+            task=tasks.get(task_id),
+            subtask=selected,
+            related_findings=plans.get_related_findings(selected.id),
+            prior_attempts=selected.feedback_history,
+            global_context=state.get("global_context", ""),
+            quality_feedback=selected.feedback_history[-1].get("feedback") if selected.feedback_history else None
+        )
+        
+        state["execution_context"] = exec_context.model_dump()
+        
+        decision = OrchDecision(
+            timestamp=datetime.utcnow(),
+            decision_type="assign",
+            rationale=f"Selected subtask '{selected.title}' with priority score {priority_score(selected):.2f}",
+            task_id=task_id,
+            subtask_id=selected.id
+        )
+        state.setdefault("decisions", []).append(decision.model_dump())
+        
+        return state
+    return assignment_node
+
+
+def make_execution_node(tasks: TaskRegistry, plans: PlanRegistry, runner: Any):
+    """Execute research with rich context and adaptive budgets"""
+    def execution_node(state: OrchState) -> OrchState:
+        task_id = state.get("current_task_id")
+        subtask_id = state.get("current_subtask_id")
+        if not task_id or not subtask_id:
+            return state
+            
+        task = tasks.get(task_id)
+        subtask = plans.subtasks.get(subtask_id)
+        if not task or not subtask:
+            return state
+            
+        # Build adaptive budget based on subtask characteristics
+        base_budget = state.get("step_budget", {})
+        budget_dict = {
+            "max_actions": base_budget.get("max_actions", 6),
+            "max_searches": base_budget.get("max_searches", 10),
+            "max_summaries": base_budget.get("max_summaries", 3),
+        }
+        
+        # Adjust based on strategy
+        if subtask.strategy == ResearchStrategy.DEEP_DIVE:
+            budget_dict["max_actions"] = min(20, budget_dict["max_actions"] * 2)
+            budget_dict["max_searches"] = min(20, budget_dict["max_searches"] * 2)
+        elif subtask.strategy == ResearchStrategy.FACT_FINDING:
+            budget_dict["max_searches"] = min(15, budget_dict["max_searches"] + 5)
+            
+        # Adjust based on iteration count
+        if subtask.iteration_count > 2:
+            budget_dict["max_actions"] = min(10, budget_dict["max_actions"] + 2)
+            
+        budget = StepBudget(**budget_dict)
+        
+        # Execute with enhanced context
+        exec_context = state.get("execution_context", {})
+        if exec_context:
+            subtask.metadata["execution_context"] = exec_context
+            
+        start_time = datetime.utcnow()
+        if hasattr(runner, "run_step"):
+            update = runner.run_step(
+                task=task,
+                subtask=subtask,
+                timebox=timedelta(minutes=15),
+                budget=budget
+            )
+        else:
+            # Fallback no-op update if runner not provided
+            update = AgentUpdate(
+                timestamp=datetime.utcnow(),
+                task_id=task.id,
+                subtask_id=subtask.id,
+                agent_id=subtask.owner_agent_id or "",
+                progress="partial",
+                findings="",
+            )
+        elapsed = (datetime.utcnow() - start_time).total_seconds() / 60
+        
+        # Track performance
+        state.setdefault("time_spent", {})[subtask_id] = state.get("time_spent", {}).get(subtask_id, 0) + elapsed
+        state.setdefault("agent_updates", []).append(update.model_dump(mode="json"))
+        
+        # Update subtask with findings
+        if update.findings:
+            subtask.metadata.setdefault("findings", []).append(update.findings)
+        if update.sources:
+            subtask.metadata.setdefault("sources", []).extend(update.sources)
+
+        # ---- NEW: Canonical research corpus entry (task-level + per-subtask history) ----
+        entry = {
+            "timestamp": (update.timestamp.isoformat() if isinstance(update.timestamp, datetime) else str(update.timestamp)),
+            "task_id": task.id,
+            "subtask_id": subtask.id,
+            "subtask_title": subtask.title,
+            "status": subtask.status,
+            "progress": update.progress,
+            "findings": update.findings,
+            "sources": list(dict.fromkeys(update.sources)) if update.sources else [],
+            "key_insights": update.key_insights or [],
+            "methodology": update.methodology_notes or "",
+        }
+        state.setdefault("research_corpus", {}).setdefault(task.id, []).append(entry)
+        subtask.metadata.setdefault("all_updates", []).append(entry)
+        # -------------------------------------------------------------------------------
+
+        # Update status based on progress
+        if update.progress == "complete":
+            subtask.status = SubtaskStatus.UNDER_REVIEW
+        elif update.progress in ["good", "partial"]:
+            subtask.status = SubtaskStatus.IN_PROGRESS
+            
+        state["current_phase"] = "evaluating"  # Move to evaluation after execution
+            
+        return state
+    return execution_node
+
+
+def make_evaluation_node(plans: PlanRegistry, quality: QualityTracker, evaluator_model):
+    """Comprehensive quality evaluation with specific feedback"""
+    def evaluation_node(state: OrchState) -> OrchState:
+        subtask_id = state.get("current_subtask_id")
+        if not subtask_id:
+            return state
+            
+        subtask = plans.subtasks.get(subtask_id)
+        if not subtask:
+            return state
+            
+        # Get latest update
+        updates = state.get("agent_updates", [])
+        if not updates:
+            return state
+            
+        latest_update = updates[-1]
+        
+        # Build evaluation context
+        eval_context = {
+            "subtask": {
+                "title": subtask.title,
+                "description": subtask.description,
+                "research_questions": subtask.research_questions,
+                "acceptance_criteria": subtask.acceptance_criteria,
+                "strategy": subtask.strategy
+            },
+            "execution": {
+                "findings": latest_update.get("findings", ""),
+                "sources": latest_update.get("sources", []),
+                "progress": latest_update.get("progress", "none"),
+                "methodology": latest_update.get("methodology_notes", "")
+            },
+            "history": {
+                "iteration_count": subtask.iteration_count,
+                "time_spent": state.get("time_spent", {}).get(subtask_id, 0),
+                "prior_feedback": subtask.feedback_history[-1] if subtask.feedback_history else None
+            }
+        }
+        
+        # Perform quality evaluation
+        if evaluator_model is None:
+            # Default assessment if no evaluator
+            assessment = QualityAssessment(
+                subtask_id=subtask_id,
+                timestamp=datetime.utcnow(),
+                scores={dim: 0.7 for dim in QualityDimension},
+                overall_score=0.7,
+                strengths=["Progress made"],
+                weaknesses=[],
+                missing_elements=[],
+                recommendations=[],
+                meets_criteria=True
+            )
+        else:
+            structured_evaluator = evaluator_model.with_structured_output(QualityAssessment)
+            assessment: QualityAssessment = structured_evaluator.invoke([
+                SystemMessage(content=QUALITY_EVALUATOR_PROMPT),
+                HumanMessage(content=json.dumps(eval_context, default=str))
+            ])
+            
+            assessment.subtask_id = subtask_id
+            assessment.timestamp = datetime.utcnow()
+        
+        # Store assessment
+        quality.add_assessment(assessment)
+        state.setdefault("quality_assessments", []).append(assessment.model_dump(mode="json"))
+        
+        # Update subtask quality scores
+        subtask.quality_scores = assessment.scores
+        
+        # Create feedback record
+        feedback_record = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "iteration": subtask.iteration_count,
+            "overall_score": assessment.overall_score,
+            "feedback": " ".join(assessment.recommendations[:3]),
+            "met_criteria": assessment.meets_criteria
+        }
+        subtask.feedback_history.append(feedback_record)
+        
+        state["current_phase"] = "policy"  # Move to policy after evaluation
+        
+        return state
+    return evaluation_node
+
+
+def make_policy_node(tasks: TaskRegistry, plans: PlanRegistry, quality: QualityTracker, policy_model):
+    """Advanced policy decisions with multi-factor analysis"""
+    def policy_node(state: OrchState) -> OrchState:
+        task_id = state.get("current_task_id")
+        subtask_id = state.get("current_subtask_id")
+        if not task_id:
+            return state
+            
+        task = tasks.get(task_id)
+        subtask = plans.subtasks.get(subtask_id) if subtask_id else None
+        
+        # Gather comprehensive context
+        task_score = quality.calculate_task_score(task_id, plans)
+        latest_assessment = state.get("quality_assessments", [])[-1] if state.get("quality_assessments") else None
+        
+        policy_context = {
+            "task": {
+                "id": task_id,
+                "name": task.name if task else None,
+                "status": task.status if task else None,
+                "priority": task.priority if task else None,
+                "overall_quality": task_score
+            },
+            "current_subtask": {
+                "id": subtask_id,
+                "title": subtask.title if subtask else None,
+                "status": subtask.status if subtask else None,
+                "iteration": subtask.iteration_count if subtask else 0,
+                "quality": latest_assessment.get("overall_score") if latest_assessment else None,
+                "met_criteria": latest_assessment.get("meets_criteria") if latest_assessment else False
+            } if subtask else None,
+            "available_subtasks": len(plans.get_executable_subtasks(task_id)),
+            "completed_subtasks": len([
+                s for s in plans.by_task.get(task_id, [])
+                if plans.subtasks[s].status == SubtaskStatus.COMPLETE
+            ]),
+            "total_subtasks": len(plans.by_task.get(task_id, [])),
+            "time_analysis": {
+                "total_time": sum(state.get("time_spent", {}).values()),
+                "current_subtask_time": state.get("time_spent", {}).get(subtask_id, 0) if subtask_id else 0
+            },
+            "quality_threshold": state.get("quality_threshold", 0.7)
+        }
+        
+        # Get policy decision
+        class PolicyDecision(BaseModel):
+            action: Literal["continue", "refine", "pivot", "escalate", "complete", "abort", "switch"]
+            rationale: str
+            confidence: float
+            parameters: Dict[str, Any] = {}
+            
+        if policy_model is None:
+            # Default conservative behavior if no model: continue
+            decision = PolicyDecision(action="continue", rationale="Default continue", confidence=0.5)
+        else:
+            structured_policy = policy_model.with_structured_output(PolicyDecision)
+            decision: PolicyDecision = structured_policy.invoke([
+                SystemMessage(content=ORCHESTRATOR_POLICY_PROMPT),
+                HumanMessage(content=json.dumps(policy_context, default=str))
+            ])
+        
+        # Process decision
+        if decision.action == "continue" and subtask:
+            subtask.metadata["continue_guidance"] = decision.parameters.get("guidance", "")
+            state["current_phase"] = "executing"
+            
+        elif decision.action == "refine" and subtask:
+            subtask.status = SubtaskStatus.NEEDS_REVISION
+            subtask.metadata["refinement_request"] = decision.parameters.get("improvements", [])
+            state["current_phase"] = "executing"
+            
+        elif decision.action == "pivot" and subtask:
+            new_strategy = decision.parameters.get("new_strategy")
+            if new_strategy and new_strategy in ResearchStrategy.__members__:
+                subtask.strategy = ResearchStrategy[new_strategy]
+            subtask.metadata["pivot_reason"] = decision.rationale
+            state["current_phase"] = "executing"
+            
+        elif decision.action == "escalate":
+            new_budget = decision.parameters.get("budget", {})
+            state["step_budget"] = {
+                "max_actions": new_budget.get("max_actions", 10),
+                "max_searches": new_budget.get("max_searches", 15),
+                "max_summaries": new_budget.get("max_summaries", 5)
+            }
+            state["current_phase"] = "executing"
+            
+        elif decision.action == "complete" and subtask:
+            subtask.status = SubtaskStatus.COMPLETE
+            state["current_subtask_id"] = None
+            
+            # Check if more subtasks available
+            remaining = plans.get_executable_subtasks(task_id)
+            if remaining:
+                state["current_phase"] = "assignment"
+            else:
+                # Check if all complete
+                all_complete = all(
+                    plans.subtasks[sid].status == SubtaskStatus.COMPLETE
+                    for sid in plans.by_task.get(task_id, [])
+                )
+                if all_complete:
+                    tasks.update_status(task_id, TaskStatus.COMPLETE)
+                    state["current_phase"] = "complete"
+                else:
+                    # Some subtasks may be blocked/failed
+                    state["current_phase"] = "synthesis"
+                
+        elif decision.action == "switch":
+            state["current_subtask_id"] = None
+            state["current_phase"] = "assignment"
+            
+        elif decision.action == "abort":
+            if subtask:
+                subtask.status = SubtaskStatus.FAILED
+            state["current_phase"] = "synthesis"
+            
+        else:
+            state["current_phase"] = "executing"
+            
+        # Record decision
+        orch_decision = OrchDecision(
+            timestamp=datetime.utcnow(),
+            decision_type=decision.action,
+            rationale=decision.rationale,
+            confidence=decision.confidence,
+            task_id=task_id,
+            subtask_id=subtask_id,
+            next_action=state["current_phase"],
+            parameters=decision.parameters
+        )
+        
+        state.setdefault("decisions", []).append(orch_decision.model_dump())
+        state["last_decision"] = orch_decision.model_dump()
+        
+        # Update iteration count
+        state["iteration_count"] = state.get("iteration_count", 0) + 1
+        
+        return state
+    return policy_node
+
+
+def make_synthesis_node(tasks: TaskRegistry, plans: PlanRegistry, quality: QualityTracker, llm_wrapper):
+    """Synthesize findings across subtasks (kept conservative; can be extended to use research_corpus)"""
+    def synthesis_node(state: OrchState) -> OrchState:
+        task_id = state.get("current_task_id")
+        if not task_id:
+            return state
+            
+        # Check if synthesis is needed
+        completed_subtasks = [
+            plans.subtasks[sid] for sid in plans.by_task.get(task_id, [])
+            if plans.subtasks[sid].status == SubtaskStatus.COMPLETE
+        ]
+        
+        if len(completed_subtasks) < 2:
+            # Not enough to synthesize - move to next phase
+            state["current_phase"] = "complete" if len(completed_subtasks) > 0 else "assignment"
+            return state
+            
+        if llm_wrapper is None:
+            state["global_context"] = "Synthesis skipped - no LLM available"
+            state["current_phase"] = "complete"
+            return state
+            
+        # Build synthesis context
+        synthesis_parts = []
+        for st in completed_subtasks:
+            findings = st.metadata.get("findings", [])
+            if findings:
+                synthesis_parts.append(f"## {st.title}\n" + "\n".join(findings[-3:]))
+                
+        if not synthesis_parts:
+            state["current_phase"] = "complete"
+            return state
+            
+        synthesis_prompt = f"""
+        Synthesize the following research findings into a coherent narrative:
+        
+        {chr(10).join(synthesis_parts)}
+        
+        Focus on:
+        1. Key themes and patterns
+        2. Important connections between findings
+        3. Overall conclusions
+        4. Remaining questions
+        """
+        
+        # FIX: use dict-style messages with LlmWrapper.chat
+        synthesis = llm_wrapper.chat([
+            {"role": "system", "content": CONTEXT_BUILDER_PROMPT},
+            {"role": "user", "content": synthesis_prompt}
+        ]) if llm_wrapper else ""
+        
+        # Update global context
+        state["global_context"] = synthesis
+        state["key_findings"] = synthesis.split("\n")[:10]
+        
+        # Mark task as complete after synthesis
+        tasks.update_status(task_id, TaskStatus.COMPLETE)
+        state["current_phase"] = "complete"
+        
+        return state
+    return synthesis_node
+
+
+# --------------------------------------------------------------------------------------
+# Routing logic
+# --------------------------------------------------------------------------------------
+
+def route_from_phase(state: OrchState) -> str:
+    """Route to appropriate node based on current phase (sanitized)"""
+    phase_raw = state.get("current_phase", "analyzing")
+    phase = _normalize_phase(phase_raw)
+
+    # If normalized phase is 'complete', stop.
+    if phase == "complete":
+        return END
+
+    task_id = state.get("current_task_id")
+    if not task_id:
+        return END
+
+    # Map normalized phase to node
+    phase_to_node = {
+        "analysis": "analysis",
+        "planning": "planning",
+        "assignment": "assignment",
+        "execution": "execution",
+        "evaluation": "evaluation",
+        "policy": "policy",
+        "synthesis": "synthesis",
+    }
+
+    return phase_to_node.get(phase, "analysis")
+
+
+# --------------------------------------------------------------------------------------
+# Enhanced Orchestrator
+# --------------------------------------------------------------------------------------
+
+class LangGraphOrchestrator:
+    """Advanced orchestrator with single-step execution (hardened planning + safe routing + grounded summaries)"""
+    
+    def __init__(
+        self,
+        agent_runner: Any,  # AgentRunnerProtocol
+        checkpointer: Optional[Any] = None,
+        policy_model: Optional[Any] = None,
+        planner_model: Optional[Any] = None,
+        evaluator_model: Optional[Any] = None,
+        llm_wrapper: Optional[Any] = None,
+    ) -> None:
+        # Registries and components
+        self.tasks = TaskRegistry()
+        self.agents = AgentRegistry()
+        self.plans = PlanRegistry()
+        self.quality = QualityTracker()
+        
+        # Models and runners
+        self.agent_runner = agent_runner
+        self.policy_model = policy_model
+        self.planner_model = planner_model or policy_model  # Can use same model
+        self.evaluator_model = evaluator_model or policy_model
+        self.llm_wrapper = llm_wrapper
+        
+        # Build graph with single-step execution
+        g = StateGraph(OrchState)
+        
+        # Add router node
+        g.add_node("router", make_router_node())
+        
+        # Add work nodes
+        g.add_node("analysis", make_analysis_node(self.tasks, self.llm_wrapper))
+        g.add_node("planning", make_planning_node(self.tasks, self.plans, self.planner_model))
+        g.add_node("assignment", make_assignment_node(self.tasks, self.agents, self.plans, self.quality))
+        g.add_node("execution", make_execution_node(self.tasks, self.plans, self.agent_runner))
+        g.add_node("evaluation", make_evaluation_node(self.plans, self.quality, self.evaluator_model))
+        g.add_node("policy", make_policy_node(self.tasks, self.plans, self.quality, self.policy_model))
+        g.add_node("synthesis", make_synthesis_node(self.tasks, self.plans, self.quality, self.llm_wrapper))
+        
+        # Set entry point to router
+        g.set_entry_point("router")
+        
+        # Add edges from router to all nodes
+        g.add_conditional_edges(
+            "router",
+            route_from_phase,
+            {
+                "analysis": "analysis",
+                "planning": "planning",
+                "assignment": "assignment",
+                "execution": "execution",
+                "evaluation": "evaluation",
+                "policy": "policy",
+                "synthesis": "synthesis",
+                END: END
+            }
+        )
+        
+        # All work nodes terminate (single-step execution)
+        g.add_edge("analysis", END)
+        g.add_edge("planning", END)
+        g.add_edge("assignment", END)
+        g.add_edge("execution", END)
+        g.add_edge("evaluation", END)
+        g.add_edge("policy", END)
+        g.add_edge("synthesis", END)
+        
+        # Compile with low recursion limit
+        cp = checkpointer or MemorySaver()
+        self.app = g.compile(checkpointer=cp)
+        
+        # State management
+        self._thread_id = uuid4().hex
+        self._base_state: OrchState = {
+            "current_task_id": None,
+            "current_subtask_id": None,
+            "current_phase": "analyzing",
+            "iteration_count": 0,
+            "total_iterations": {},
+            "global_context": "",
+            "research_focus": "",
+            "key_findings": [],
+            "quality_assessments": [],
+            "quality_threshold": 0.7,
+            "decisions": [],
+            "last_decision": None,
+            "agent_updates": [],
+            "agent_performance": {},
+            "current_plan": None,
+            "plan_adjustments": [],
+            "step_budget": {"max_actions": 6},
+            "time_spent": {},
+            "research_corpus": {},          # NEW
+            "latest_summary": None,         # NEW
+            "started_at": datetime.utcnow().isoformat(),
+            "last_checkpoint": datetime.utcnow().isoformat(),
+            "checkpoint_count": 0,
+        }
+        
+    # -------------------- Public API (maintains compatibility) --------------------
+    
+    def create_task(
+        self,
+        name: str,
+        description: str,
+        *,
+        objectives: List[str] | None = None,
+        constraints: List[str] | None = None,
+        deadline: Optional[datetime] = None,
+        priority: int = 3,
+    ) -> str:
+        """Create a new research task"""
+        spec = TaskSpec(
+            id=uuid4().hex,
+            name=name,
+            description=description,
+            objectives=objectives or [],
+            constraints=constraints or [],
+            deadline=deadline,
+            priority=priority,
+        )
+        self.tasks.add(spec)
+        self._base_state["current_task_id"] = spec.id
+        return spec.id
+    
+    def add_agent(
+        self,
+        role: str = "researcher",
+        model: Optional[str] = None,
+        tools: Optional[List[str]] = None,
+    ) -> str:
+        """Add an agent to the pool"""
+        agent = AgentSpec(
+            id=uuid4().hex,
+            role=role,
+            model=model,
+            tools=tools or [],
+            capabilities=[role],  # Can be enhanced
+        )
+        self.agents.add(agent.id, agent)
+        return agent.id
+    
+    def add_subtask(
+        self,
+        task_id: str,
+        title: str,
+        *,
+        deps: Optional[List[str]] = None,
+        acceptance_criteria: Optional[List[str]] = None,
+        owner_agent_id: Optional[str] = None,
+    ) -> str:
+        """Manually add a subtask (usually auto-generated by planner)"""
+        st = Subtask(
+            task_id=task_id,
+            title=title,
+            description="",
+            dependencies=deps or [],
+            acceptance_criteria=acceptance_criteria or [],
+            owner_agent_id=owner_agent_id,
+            strategy=ResearchStrategy.BROAD_SURVEY,
+        )
+        self.plans.add_subtask(st)
+        return st.id
+    
+    def set_budget(
+        self,
+        max_actions: int = 6,
+        max_seconds: Optional[int] = None,
+        max_searches: Optional[int] = None,
+        max_summaries: Optional[int] = None,
+    ) -> None:
+        """Set execution budget constraints"""
+        self._base_state["step_budget"] = {
+            "max_actions": max_actions,
+            "max_seconds": max_seconds,
+            "max_searches": max_searches,
+            "max_summaries": max_summaries,
+        }
+    
+    def run_until_idle(self, max_loops: int = 50) -> None:
+        """Run until all tasks complete or max loops reached"""
+        initial_count = self._base_state.get("iteration_count", 0)
+        
+        while self._base_state.get("iteration_count", 0) - initial_count < max_loops:
+            self.step()
+            
+            # Check if all tasks complete
+            if not self.tasks.list_active():
+                break
+                
+            # Check if we're stuck
+            if _normalize_phase(self._base_state.get("current_phase")) == "complete":
+                break
+                
+            # Periodic synthesis
+            if self._base_state.get("iteration_count", 0) % 10 == 0:
+                self._run_synthesis()
+    
+    def step(self) -> None:
+        """Execute one iteration of the orchestration loop"""
+        # Normalize incoming phase to avoid routing failures
+        self._base_state["current_phase"] = _normalize_phase(self._base_state.get("current_phase", "analysis"))
+        old_phase = self._base_state.get("current_phase", "unknown")
+        
+        result = self.app.invoke(
+            self._base_state,
+            config={"configurable": {"thread_id": self._thread_id}},
+        )
+        
+        # Update base state with results
+        if isinstance(result, dict):
+            self._base_state.update(result)
+            
+        # Log the step
+        new_phase = _normalize_phase(self._base_state.get("current_phase", "unknown"))
+        self._base_state["current_phase"] = new_phase
+        if old_phase != new_phase:
+            self._base_state["checkpoint_count"] = self._base_state.get("checkpoint_count", 0) + 1
+            self._base_state["last_decision"] = self._base_state.get("last_decision")
+            self._base_state["last_checkpoint"] = datetime.utcnow().isoformat()
+    
+    def get_decisions(self) -> List[OrchDecision]:
+        """Get all orchestration decisions"""
+        raw = self._base_state.get("decisions", [])
+        return [OrchDecision(**d) if isinstance(d, dict) else d for d in raw]
+    
+    def get_updates(self) -> List[AgentUpdate]:
+        """Get all agent updates"""
+        raw = self._base_state.get("agent_updates", [])
+        return [AgentUpdate(**u) if isinstance(u, dict) else u for u in raw]
+    
+    def thread_id(self) -> str:
+        """Get the thread ID for this orchestration session"""
+        return self._thread_id
+    
+    # -------------------- Additional Helper Methods --------------------
+    
+    def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """Get comprehensive task status"""
+        task = self.tasks.get(task_id)
+        if not task:
+            return {}
+            
+        completed = sum(
+            1 for sid in self.plans.by_task.get(task_id, [])
+            if self.plans.subtasks[sid].status == SubtaskStatus.COMPLETE
+        )
+        total = len(self.plans.by_task.get(task_id, []))
+        
+        return {
+            "task": task.model_dump(),
+            "progress": f"{completed}/{total} subtasks complete",
+            "quality_score": self.quality.calculate_task_score(task_id, self.plans),
+            "time_spent": sum(
+                self._base_state.get("time_spent", {}).get(sid, 0)
+                for sid in self.plans.by_task.get(task_id, [])
+            ),
+            "current_subtask": self._base_state.get("current_subtask_id"),
+            "iterations": self._base_state.get("iteration_count", 0)
+        }
+    
+    def _run_synthesis(self) -> None:
+        """Trigger synthesis node manually"""
+        synthesis_node = make_synthesis_node(self.tasks, self.plans, self.quality, self.llm_wrapper)
+        synthesis_node(self._base_state)
+
+    # ---- NEW: Grounded research summary generator ----
+    def generate_research_summary(self, task_id: str) -> str:
+        """Produce a human-readable summary grounded in ALL research so far (partial + complete)."""
+        task = self.tasks.get(task_id)
+        corpus = self._base_state.get("research_corpus", {}).get(task_id, [])
+        if not corpus:
+            return "No research yet."
+
+        # Group by subtask and collect sources
+        by_subtask: Dict[str, Dict[str, Any]] = {}
+        all_sources: List[str] = []
+        for e in corpus:
+            sid = e["subtask_id"]
+            by_subtask.setdefault(sid, {"title": e.get("subtask_title", sid), "updates": []})
+            by_subtask[sid]["updates"].append(e)
+            all_sources.extend(e.get("sources", []))
+
+        # Deduplicate sources with order preserved
+        seen = set()
+        dedup_sources: List[str] = []
+        for s in all_sources:
+            if s not in seen and s:
+                seen.add(s)
+                dedup_sources.append(s)
+
+        # Build compact, structured context
+        structured_context = {
+            "task": task.model_dump() if task else {"id": task_id},
+            "subtasks": [
+                {
+                    "id": sid,
+                    "title": block["title"],
+                    "latest_update": sorted(block["updates"], key=lambda x: x["timestamp"], reverse=True)[0],
+                    "history": sorted(block["updates"], key=lambda x: x["timestamp"], reverse=True)[:5],
+                }
+                for sid, block in by_subtask.items()
+            ],
+            "sources": dedup_sources[:100],
+            "quality": {"overall_task_score": self.quality.calculate_task_score(task_id, self.plans)},
+            "time_spent_minutes": sum(self._base_state.get("time_spent", {}).get(sid, 0) for sid in self.plans.by_task.get(task_id, [])),
+        }
+
+        # Deterministic fallback if no LLM wrapper configured
+        if not self.llm_wrapper:
+            lines: List[str] = []
+            title = task.name if task else f"Task {task_id}"
+            lines.append(f"# Research Summary: {title}\n")
+            lines.append("## Executive Summary")
+            lines.append("- Research is in progress; see findings by subtask.\n")
+            lines.append("## Findings by Subtask")
+            for st in structured_context["subtasks"]:
+                lu = st["latest_update"]
+                txt = lu.get("findings") or "(no written findings yet)"
+                lines.append(f"- **{st['title']}**: {txt}")
+            if dedup_sources:
+                lines.append("\n## Sources")
+                for i, s in enumerate(dedup_sources, 1):
+                    lines.append(f"[{i}] {s}")
+            out = "\n".join(lines)
+            self._base_state["latest_summary"] = out
+            return out
+
+        # LLM-based summary
+        # FIX: use dict-style messages with LlmWrapper.chat (avoid SystemMessage/HumanMessage objects)
+        summary = self.llm_wrapper.chat([
+            {"role": "system", "content": SUMMARY_SYS_PROMPT},
+            {"role": "user", "content": json.dumps(structured_context, default=str)}
+        ])
+        self._base_state["latest_summary"] = summary
+        return summary
+    # -------------------------------------------------
+
+    def get_research_summary(self, task_id: str) -> str:
+        """Return the grounded research summary (uses the canonical corpus)."""
+        return self.generate_research_summary(task_id)

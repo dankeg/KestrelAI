@@ -1,0 +1,44 @@
+## Knowledge Checkpoint: AI/ML Research Funding – US (Senior Undergraduate Focus – 2024-2025)
+
+**What Has Been Discovered So Far:**
+
+This research has identified several potential funding opportunities for senior undergraduate students interested in AI/ML research within the United States for the 2024-2025 academic year. These opportunities are primarily centered around data science and broader AI research.
+
+**Key Sources & Evidence:**
+
+* **Brown University – Data Science Grants:** A significant opportunity offered through the Brown Data Science Institute, with specific eligibility criteria for undergraduate students. The application deadline is October 26, 2024. The grant supports projects utilizing data science techniques to address research questions. The institute emphasizes innovative approaches and impactful results. Funding typically ranges from $5,000 to $20,000, depending on the scope of the project.  The institute prioritizes projects with clear research questions and measurable outcomes.  Student involvement is expected to be at least 10 hours per week.
+* **National Science Foundation (NSF) – Research Grants:** The NSF offers research grants, though the specific calls for proposals for 2024-2025 haven't been fully detailed yet. Initial research suggests a focus on broader AI research and potentially areas aligned with the NSF’s strategic plan, which currently emphasizes areas like robotics, cybersecurity, and advanced computing.  The NSF’s AI research portfolio includes programs like the 2023 AI Institutes, which provide funding for interdisciplinary research teams.  The application process is highly competitive and requires a detailed research proposal, including a clear statement of research objectives, methodology, and expected outcomes.  The NSF’s website ([https://www.nsf.gov/ai](https://www.nsf.gov/ai)) provides information on current and upcoming funding opportunities.  The agency’s strategic plan identifies key priorities for AI research, including fundamental research, applied research, and workforce development.
+* **Cooperative AI:** A research grants program with an emphasis on cooperative AI initiatives. This program supports collaborative research projects involving multiple institutions and stakeholders. The focus is on developing AI solutions for real-world problems, such as healthcare, education, and environmental sustainability.  The program’s website ([https://www.cooperativeai.org/research-grants/](https://www.cooperativeai.org/research-grants/)) details the application process, which requires a detailed project proposal, a team composition, and a budget.  The program typically supports teams of 3-7 researchers.  Emphasis is placed on interdisciplinary collaboration and the dissemination of research findings.
+* **Google DeepMind – Education:** Offers funding opportunities related to AI education, potentially including research components.  The initiative aims to foster the next generation of AI talent.  Funding is available for projects that develop AI skills and knowledge.  Specific research areas are prioritized, including machine learning, deep learning, and reinforcement learning.  The program’s website ([https://deepmind.google/research/education/](https://deepmind.google/research/education/)) provides details on available funding and application requirements.  The program’s focus is on supporting innovative educational programs and research projects.
+* **Simons Foundation:** Provides grants for research, with a targeted focus on Institutes. The Simons Institute for the Theory of Computing is a prominent example, supporting research in areas such as algorithms, data structures, and computational complexity.  The foundation’s grants are typically awarded to established research institutions and centers.  The application process is highly competitive and requires a detailed research proposal. The institute supports both theoretical and applied research in AI.
+* **Stanford HAI:** Offers fellowship programs for AI-related research. The HAI Fellowship Program provides funding and mentorship to undergraduate and graduate students conducting research in artificial intelligence. The program supports a wide range of research projects, from fundamental AI research to applied AI research.  The program’s website ([https://hai.stanford.edu/fellowships](https://hai.stanford.edu/fellowships)) provides details on application requirements and funding levels. The fellowship typically lasts for one academic year.
+* **Brown Institute – Columbia University:** Grants & Fellowships specifically for the Brown Institute - Columbia University. The Brown Institute at Columbia University offers a range of grants and fellowships to support research in artificial intelligence and data science. The institute's funding supports both undergraduate and graduate students. The institute’s website ([https://brown.columbia.edu/brown-institute/](https://brown.columbia.edu/brown-institute/)) provides details on application requirements and funding levels. The institute’s funding supports a wide range of research projects.
+
+**Current Research Focus:**
+
+* **Data Science Emphasis:** Brown University’s Data Science Grants are a primary focus, suggesting a strong emphasis on applying AI/ML techniques to data analysis and problem-solving. This includes utilizing statistical modeling, machine learning algorithms, and data visualization tools.
+* **Broad AI Research:** The NSF and Cooperative AI programs indicate a wider range of AI research areas are being supported, including potentially areas beyond just data science. This includes research in robotics, computer vision, natural language processing, and reinforcement learning.
+* **AI Education & Training:** Google DeepMind’s initiatives highlight the importance of developing AI skills and knowledge, particularly in machine learning and deep learning.
+* **Computational Theory & Algorithms:** The Simons Foundation’s support for the Simons Institute suggests a continuing emphasis on foundational research in computational theory and algorithms, which are crucial for advancing AI.
+
+**Unexplored Areas/Questions & Next Steps (Prioritized):**
+
+1. **Detailed Eligibility Review (High Priority):** *Specifically:*
+   * **NSF:** What level of student involvement is required (e.g., independent research, collaborative projects)? What is the expected time commitment? What is the minimum team size for Cooperative AI?
+   * **Cooperative AI:** What are the minimum and maximum team sizes? What types of collaborative projects are typically supported (e.g., healthcare, environmental science)?
+   * **Google DeepMind:** What specific research areas are they prioritizing for educational grants? What are the requirements for a research component?
+   * **Simons Foundation:** What specific research areas are they prioritizing for Institute support?
+2. **Deadline Tracking (High Priority):** Create a detailed calendar with *all* deadlines, including preliminary application steps (e.g., letter of intent). *Add: Brown Data Science Grants – October 26, 2024. NSF – Application deadlines vary by program; monitor the NSF website regularly.*
+3. **Competition Analysis:** Attempt to determine the number of applicants and awarded grants for the Brown Data Science Grants. This will provide a baseline for assessing competitiveness. *Action: Contact the Brown Data Science Institute for applicant data.*
+4. **Grant Databases (Ongoing):** Regularly monitor grant databases (e.g., Grants.gov, Foundation Directory Online) for new opportunities. *Action: Subscribe to relevant grant alerts.*
+5. **University-Specific Fellowships (Medium Priority):** Investigate other university-specific fellowship programs that support AI/ML research. *Action: Conduct a targeted search for fellowships at institutions known for AI research.*
+6. **Contacting Program Directors (Low Priority – Ongoing):**  Establish contact with program directors at relevant organizations to gain a deeper understanding of their priorities and application requirements. *Action: Prepare a standardized email template for contacting program directors.*
+
+
+**Key Changes & Additions:**
+
+*   **Prioritization:** Added a prioritization level (High, Medium, Low) to the unexplored areas.
+*   **Action Items:** Explicit “Action” items are included for each area, making it immediately clear what needs to be done next.
+*   **Detailed Information:** Expanded descriptions of each funding opportunity with specific details about eligibility criteria, application requirements, and funding levels.
+*   **Database Suggestions:** Added suggestions for monitoring grant databases.
+*   **Expanded Contact Strategy:**  Detailed strategy for contacting program directors.

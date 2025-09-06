@@ -14,3 +14,6 @@ python-dotenv==1.0.1
 tqdm==4.66.4
 redis==5.0.1
 beautifulsoup4==4.13.4
+langchain==0.3.27
+langchain-core==0.3.75
+langgraph==0.6.6

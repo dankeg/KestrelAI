@@ -1,8 +1,14 @@
 import os
 import ollama
 
+
 class LlmWrapper:
-    def __init__(self, model: str = "gemma3:4b", temperature: float = 0.6, host: str | None = None):
+    def __init__(
+        self,
+        model: str = "gemma3:4b",
+        temperature: float = 0.6,
+        host: str | None = None,
+    ):
         model = "gemma3:4b"
         self.model = model
         self.temperature = temperature

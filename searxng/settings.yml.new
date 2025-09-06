@@ -238,6 +238,9 @@ plugins:
   searx.plugins.hostnames.SXNGPlugin:
     active: true
 
+  searx.plugins.time_zone.SXNGPlugin:
+    active: true
+
   searx.plugins.oa_doi_rewrite.SXNGPlugin:
     active: false
 
@@ -1952,6 +1955,7 @@ engines:
     engine: searchcode_code
     shortcut: scc
     disabled: true
+    inactive: true
 
   # - name: searx
   #   engine: searx_engine
@@ -2520,6 +2524,12 @@ engines:
     paging: true
     categories: videos
     disabled: true
+
+  - name: repology
+    engine: repology
+    shortcut: rep
+    disabled: true
+    inactive: true
 
   - name: livespace
     engine: livespace

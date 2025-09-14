@@ -411,7 +411,6 @@ async def process_queues():
             # Process search entries
             raw = await r.rpop(RedisQueues.TASK_SEARCHES)
             if raw:
-                logging.error(f"Raw search entry: {raw}")  # Debugging line
                 entry = SearchEntry(**json.loads(raw))
                 key = RedisKeys.TASK_SEARCHES.format(task_id=entry.taskId)
                 await r.lpush(key, raw)

@@ -3,16 +3,33 @@
 When contributing to this repository, please first discuss the change you wish to make via issue, email, or any other method with the owners of this repository before making a change.
 
 ## Development environment setup
+In addition to dockerized deployment, a setup is provided using the [Panels](https://panel.holoviz.org/) Python library. This aims to make development easier by isolating the research agent component, enabling it to be tested and tweaked independently from the FastAPI Backend and React UI. 
 
-To set up a development environment, please follow these steps:
+Follow these steps to get the Panels UI running:
 
 1. Clone the repo
 
    ```sh
    git clone https://github.com/dankeg/kestrelAI
    ```
+2. Install Poetry, if not already installed
 
-2. Follow the same steps for running the application, building the docker images locally rather than using the provided ones from the package registry.
+   ```sh
+   https://python-poetry.org/docs/
+   ```
+3. Install the project dependencies locally
+
+   ```sh
+   poetry install -E agent 
+   ```
+4. Start the Panels Application
+
+   ```sh
+   poetry run panel serve KestrelAI/dashboard.py --autoreload --show
+   ```
+
+The UI should automatically launch in the browser.
+
 
 ## Issues and feature requests
 

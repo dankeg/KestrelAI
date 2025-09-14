@@ -26,6 +26,16 @@ jobs:
           install: true
 
       # Login only when pushing to GHCR (main)
+      - name: Free disk space
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache
+          echo "Disk usage after cleanup:"
+          df -h
       - name: Login to GHCR
         if: env.IS_MAIN == 'true'
         uses: docker/login-action@v3
@@ -69,14 +79,36 @@ jobs:
         with:
           name: docker-images-${{ github.run_id }}
           path: image-artifacts/
-          compression-level: 0
+          compression-level: 9
+      
+      - name: Cleanup Docker
+        if: env.IS_MAIN != 'true'
+        run: |
+          echo "Disk usage before prune:"
+          docker system df
+          docker system prune -af --volumes
+          echo "Disk usage after prune:"
+          docker system df
 
       # ---------- main: push to GHCR ----------
-      - name: Bake (push to GHCR)
+      - name: Bake & push images sequentially
         if: env.IS_MAIN == 'true'
-        uses: docker/bake-action@v5
-        with:
-          files: docker-compose.yml
-          set: |
-            *.push=true
-            *.no-cache=true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Discover all bake targets
+          targets=$(docker buildx bake --print -f docker-compose.yml | jq -r '.target | keys[]')
+
+          for t in $targets; do
+            echo "==> Building & pushing $t"
+            docker buildx bake -f docker-compose.yml "$t" \
+              --set "$t.push=true" \
+              --set "$t.no-cache=true"
+
+            echo "==> Cleaning up $t to free disk"
+            docker image rm "ghcr.io/dankeg/kestrelai-${t}:commit-${COMMIT_SHA}" || true
+            docker image rm "${t}:latest" || true
+            docker system prune -af --volumes || true
+            echo "==> Done with $t"
+          done

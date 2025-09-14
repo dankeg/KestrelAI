@@ -11,6 +11,11 @@ Features:
   • Search history with details
   • Export functionality
   • Full report version browser (filter + picker + prev/next)
+  
+IMPORTANT: This is a Panel application. Run it with:
+  panel serve dashboard.py --autoreload --show
+  
+Do NOT run it directly with python dashboard.py
 """
 
 # -----------------------------------------------------------------------------
@@ -24,6 +29,7 @@ from datetime import datetime
 from collections import deque
 from typing import Dict, List
 import json
+from copy import deepcopy
 
 # -----------------------------------------------------------------------------
 # Third-party deps
@@ -36,9 +42,9 @@ from panel.widgets import Button
 # -----------------------------------------------------------------------------
 from agents.orchestrator import Orchestrator
 from agents.base import LlmWrapper
-from agents.research_agents import ResearchAgent
+from agents.research_agents import ResearchAgent, SEARCH_RESULTS
 from memory.vector_store import MemoryStore
-from shared.models import Task
+from shared.models import Task, TaskStatus
 
 # -----------------------------------------------------------------------------
 # Beautiful Kestrel-inspired CSS
@@ -472,9 +478,9 @@ Prioritize reputable, broadly accessible venues and student programs tied to maj
 ML_COMPETITIONS_TASK = """Find active AI/ML student competitions or challenges suitable for senior undergraduates in the United States. Include organizer, problem theme, eligibility, prize(s) or publication opportunities, important dates (registration close, submission due), compute support (if any), and link. Prioritize well-known organizers (Kaggle, Google, Microsoft, Meta, OpenAI, Anthropic) and academic conferences. Exclude archived or invitation-only events."""
 
 tasks = [
-    Task("ML Fellowships", ML_TASK, budget_minutes=180),
-    Task("Conferences", AI_CONFERENCES_CALL_FOR_ABSTRACTS_TASK, budget_minutes=180),
-    Task("Competitions", ML_COMPETITIONS_TASK, budget_minutes=180),
+    Task(name="ML Fellowships", description=ML_TASK, budgetMinutes=180),
+    Task(name="Conferences", description=AI_CONFERENCES_CALL_FOR_ABSTRACTS_TASK, budgetMinutes=180),
+    Task(name="Competitions", description=ML_COMPETITIONS_TASK, budgetMinutes=180),
 ]
 
 # -----------------------------------------------------------------------------
@@ -485,15 +491,17 @@ llm = LlmWrapper(model="gemma3:12b")
 agent = ResearchAgent(mem, llm)
 orch = Orchestrator(tasks, llm)
 
-
 # -----------------------------------------------------------------------------
 # State management
 # -----------------------------------------------------------------------------
 class DashboardState:
     def __init__(self):
         self.current_task: str = "Initializing..."
+        self.current_task_obj: Task = None
         self.task_start: float = time.time()
         self.latest_notes: str = ""
+        self.latest_feedback: str = "No Feedback Yet!"
+        self.latest_subtask: str = ""
         self.is_paused: bool = False
         self.start_time: float = time.time()
 
@@ -610,149 +618,204 @@ class DashboardState:
 
 state = DashboardState()
 
-
 # -----------------------------------------------------------------------------
-# Orchestration loop
+# Orchestration loop (CORRECTED FOR STRING-BASED TASK TRACKING)
 # -----------------------------------------------------------------------------
 def orchestration_loop():
     pathlib.Path("notes").mkdir(exist_ok=True)
+    
+    # Initialize current to first task name if not already set
+    if not hasattr(orch, 'current') or orch.current is None:
+        if tasks:
+            orch.current = tasks[0].name
+    
+    # Do planning phase for first task
+    if orch.current and orch.current in orch.tasks:
+        first_task = orch.tasks[orch.current]
+        orch._planning_phase(first_task)
+        if orch.research_plan and orch.research_plan.subtasks:
+            state.latest_subtask = orch.research_plan.subtasks[0].description
 
     while True:
-        if state.is_paused:
-            time.sleep(0.5)
-            continue
+        try:
+            if state.is_paused:
+                time.sleep(0.5)
+                continue
 
-        if not orch.current:
-            time.sleep(1)
-            continue
+            # Check if current is valid (it's a string task name)
+            if orch.current is None or orch.current not in orch.tasks:
+                time.sleep(1)
+                continue
 
-        task = orch.tasks[orch.current]
+            task = orch.tasks[orch.current]
+            
+            # Update task status
+            task.status = TaskStatus.ACTIVE
 
-        # Handle task switching
-        if state.current_task != task.name:
-            if (
-                state.current_task != "Initializing..."
-                and state.current_task in state.task_history
-            ):
-                state.task_history[state.current_task]["status"] = "complete"
-                state.task_history[state.current_task]["end_time"] = time.time()
+            # Handle task switching
+            if state.current_task != task.name:
+                if (
+                    state.current_task != "Initializing..."
+                    and state.current_task in state.task_history
+                ):
+                    state.task_history[state.current_task]["status"] = "complete"
+                    state.task_history[state.current_task]["end_time"] = time.time()
 
-            state.current_task = task.name
-            state.task_start = time.time()
-            state.task_history[task.name]["status"] = "active"
-            if state.task_history[task.name]["start_time"] is None:
-                state.task_history[task.name]["start_time"] = time.time()
+                state.current_task = task.name
+                state.current_task_obj = task
+                state.task_start = time.time()
+                state.task_history[task.name]["status"] = "active"
+                if state.task_history[task.name]["start_time"] is None:
+                    state.task_history[task.name]["start_time"] = time.time()
 
-            state.activity_log.append(
-                {
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "type": "task_start",
-                    "message": f"🦅 Started: {task.name.title()}",
-                }
+                state.activity_log.append(
+                    {
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "task_start",
+                        "message": f"🦅 Started: {task.name.title()}",
+                    }
+                )
+                state.last_update = time.time()
+
+            # Create a modified task with current subtask and feedback
+            temp_task = deepcopy(task)
+            temp_task.description = (
+                task.description
+                + "\nCurrent Subtask: "
+                + state.latest_subtask
+                + "\nCurrent Feedback: "
+                + state.latest_feedback
             )
-            state.last_update = time.time()
 
-        # Execute research step
-        notes = agent.run_step(task)
+            # Execute research step
+            notes = agent.run_step(temp_task)
 
-        if notes and len(notes) > 10:
-            state.latest_notes = notes
+            if notes and len(notes) > 10:
+                state.latest_notes = notes
 
-            # Store report in history
-            state.add_report(task.name, notes)
+                # Store report in history
+                state.add_report(task.name, notes)
 
-            # Get REAL metrics from agent
-            if hasattr(agent, "get_global_metrics"):
-                metrics = agent.get_global_metrics()
-                state.total_llm_calls = metrics.get("total_llm_calls", 0)
-                state.total_searches = metrics.get("total_searches", 0)
-                state.total_summaries = metrics.get("total_summaries", 0)
-                state.total_checkpoints = metrics.get("total_checkpoints", 0)
-                state.total_web_fetches = metrics.get("total_web_fetches", 0)
+                # Get REAL metrics from agent
+                if hasattr(agent, "get_global_metrics"):
+                    metrics = agent.get_global_metrics()
+                    state.total_llm_calls = metrics.get("total_llm_calls", 0)
+                    state.total_searches = metrics.get("total_searches", 0)
+                    state.total_summaries = metrics.get("total_summaries", 0)
+                    state.total_checkpoints = metrics.get("total_checkpoints", 0)
+                    state.total_web_fetches = metrics.get("total_web_fetches", 0)
 
-            # Get task-specific metrics
-            if hasattr(agent, "get_task_metrics"):
-                task_metrics = agent.get_task_metrics(task.name)
-                task_info = state.task_history[task.name]
+                # Get task-specific metrics
+                if hasattr(agent, "get_task_metrics"):
+                    task_metrics = agent.get_task_metrics(task.name)
+                    task_info = state.task_history[task.name]
 
-                # Update with REAL data from agent
-                task_info["searches"] = task_metrics.get("searches", [])
-                task_info["search_count"] = task_metrics.get("search_count", 0)
-                task_info["think_count"] = task_metrics.get("think_count", 0)
-                task_info["summary_count"] = task_metrics.get("summary_count", 0)
-                task_info["checkpoint_count"] = task_metrics.get("checkpoint_count", 0)
-                task_info["action_count"] = task_metrics.get("action_count", 0)
+                    # Update with REAL data from agent
+                    task_info["searches"] = task_metrics.get("searches", [])
+                    task_info["search_count"] = task_metrics.get("search_count", 0)
+                    task_info["think_count"] = task_metrics.get("think_count", 0)
+                    task_info["summary_count"] = task_metrics.get("summary_count", 0)
+                    task_info["checkpoint_count"] = task_metrics.get("checkpoint_count", 0)
+                    task_info["action_count"] = task_metrics.get("action_count", 0)
 
-                # Update search history with real search data
-                for search_entry in task_metrics.get("search_history", []):
-                    if isinstance(search_entry, dict) and "query" in search_entry:
+                    # Update search history with real search data
+                    for search_query in task_metrics.get("searches", []):
                         if not any(
-                            s.get("query") == search_entry["query"]
+                            s.get("query") == search_query
                             for s in state.search_history
                         ):
                             state.search_history.append(
                                 {
                                     "time": datetime.now().strftime("%H:%M:%S"),
                                     "task": task.name,
-                                    "query": search_entry["query"],
-                                    "results_count": search_entry.get(
-                                        "results_count", 0
-                                    ),
+                                    "query": search_query,
+                                    "results_count": SEARCH_RESULTS,
                                 }
                             )
 
-            # Update common fields
-            elapsed = time.time() - state.task_start
-            progress = min(100, (elapsed / (task.budget_minutes * 60)) * 100)
+                # Update common fields
+                elapsed = time.time() - state.task_start
+                progress = min(100, (elapsed / (task.budgetMinutes * 60)) * 100)
 
-            task_info = state.task_history[task.name]
-            task_info.update(
-                {
-                    "elapsed": elapsed,
-                    "progress": progress,
-                    "notes": notes[:1000],
-                    "last_action": datetime.now().strftime("%H:%M:%S"),
-                }
-            )
+                task_info = state.task_history[task.name]
+                task_info.update(
+                    {
+                        "elapsed": elapsed,
+                        "progress": progress,
+                        "notes": notes[:1000],
+                        "last_action": datetime.now().strftime("%H:%M:%S"),
+                    }
+                )
 
-            # Save notes
-            with open(f"notes/{task.name.upper()}.txt", "w", encoding="utf-8") as fh:
-                fh.write(notes)
+                # Save notes
+                safe_name = "".join(
+                    c if c.isalnum() or c in (" ", "-", "_") else "_" for c in task.name
+                ).strip()
+                with open(f"notes/{safe_name.upper()}.txt", "w", encoding="utf-8") as fh:
+                    fh.write(notes)
 
-            # Log activity with emojis
-            if "[SEARCH]" in notes:
-                message = "🔍 Searching for information"
-            elif "[THOUGHT]" in notes:
-                message = "🤔 Analyzing findings"
-            elif "[SUMMARY]" in notes:
-                message = "📝 Creating summary"
-            elif "[CHECKPOINT" in notes:
-                message = "💾 Saving checkpoint"
-            else:
-                message = "⚙️ Processing"
+                # Log activity with emojis
+                if "[SEARCH]" in notes:
+                    message = "🔍 Searching for information"
+                elif "[THOUGHT]" in notes or "[THINKING]" in notes:
+                    message = "🤔 Analyzing findings"
+                elif "[SUMMARY]" in notes:
+                    message = "📝 Creating summary"
+                elif "[CHECKPOINT" in notes:
+                    message = "💾 Saving checkpoint"
+                else:
+                    message = "⚙️ Processing"
 
-            state.activity_log.append(
-                {
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "type": "action",
-                    "message": message,
-                }
-            )
+                state.activity_log.append(
+                    {
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "type": "action",
+                        "message": message,
+                    }
+                )
 
+                state.last_update = time.time()
+
+                # Let orchestrator decide next
+                feedback = orch.next_action(task, notes)
+                state.latest_feedback = feedback
+                
+                # Check if task is complete based on progress
+                if progress >= 100.0:
+                    task.status = TaskStatus.COMPLETE
+                    state.task_history[task.name]["status"] = "complete"
+                    state.task_history[task.name]["end_time"] = time.time()
+                    
+                    # Move to next task (orch.current is a string task name)
+                    # Find current task index and move to next
+                    task_names = [t.name for t in tasks]
+                    current_idx = task_names.index(orch.current) if orch.current in task_names else -1
+                    
+                    if current_idx >= 0 and current_idx < len(task_names) - 1:
+                        orch.current = task_names[current_idx + 1]
+                    else:
+                        orch.current = None
+                    
+                    # Plan for next task if available
+                    if orch.current is not None and orch.current in orch.tasks:
+                        next_task = orch.tasks[orch.current]
+                        orch._planning_phase(next_task)
+                        if orch.research_plan and orch.research_plan.subtasks:
+                            state.latest_subtask = orch.research_plan.subtasks[0].description
+
+            time.sleep(0.5)
+
+        except Exception as e:
+            print(f"Error in orchestration loop: {e}")
+            import traceback
+            traceback.print_exc()
+            state.activity_log.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "type": "error",
+                "message": f"❌ Error: {str(e)[:100]}"
+            })
             state.last_update = time.time()
-
-        # Let orchestrator decide next
-        orch.next_action(task, notes)
-        time.sleep(0.5)
-
-        # print(f"Error in orchestration loop: {e}")
-        # state.activity_log.append({
-        #     "time": datetime.now().strftime("%H:%M:%S"),
-        #     "type": "error",
-        #     "message": f"❌ Error: {str(e)[:100]}"
-        # })
-        state.last_update = time.time()
-        time.sleep(2)
+            time.sleep(2)
 
 
 # Start background thread
@@ -792,6 +855,14 @@ header_pane = pn.pane.HTML(
 def pause_resume():
     state.is_paused = not state.is_paused
     pause_btn.name = "▶️ Resume" if state.is_paused else "⏸️ Pause"
+    
+    # Update task status when pausing/resuming
+    if state.current_task_obj:
+        if state.is_paused:
+            state.current_task_obj.status = TaskStatus.PAUSED
+        else:
+            state.current_task_obj.status = TaskStatus.ACTIVE
+    
     state.activity_log.append(
         {
             "time": datetime.now().strftime("%H:%M:%S"),
@@ -827,7 +898,7 @@ export_btn.on_click(lambda e: export_results(True))
 
 control_row = pn.Row(pause_btn, export_btn, sizing_mode="stretch_width")
 
-# --- Report navigation buttons (shown in layout) ---
+# Report navigation buttons
 prev_btn = Button(name="◀ Previous", button_type="default", width=100)
 prev_btn.on_click(lambda e: prev_report())
 
@@ -874,7 +945,7 @@ report_info_pane = pn.pane.HTML(
     sizing_mode="stretch_width",
 )
 
-# --- Report history browser controls (Task filter + search + version select) ---
+# Report history browser controls
 task_filter = pn.widgets.Select(
     name="Task", options=["All"] + [t.name for t in tasks], value="All", width=160
 )
@@ -1133,6 +1204,7 @@ def update_dashboard():
             formatted = current_report["content"]
             formatted = re.sub(r"\[SEARCH\]", "\n\n### 🔍 Search:", formatted)
             formatted = re.sub(r"\[THOUGHT\]", "\n\n### 🤔 Analysis:", formatted)
+            formatted = re.sub(r"\[THINKING\]", "\n\n### 🤔 Analysis:", formatted)
             formatted = re.sub(r"\[SUMMARY\]", "\n\n### 📝 Summary:", formatted)
             formatted = re.sub(
                 r"\[CHECKPOINT.*?\]", "\n\n### 💾 Checkpoint:", formatted
@@ -1152,6 +1224,7 @@ def update_dashboard():
                 formatted = state.latest_notes
                 formatted = re.sub(r"\[SEARCH\]", "\n\n### 🔍 Search:", formatted)
                 formatted = re.sub(r"\[THOUGHT\]", "\n\n### 🤔 Analysis:", formatted)
+                formatted = re.sub(r"\[THINKING\]", "\n\n### 🤔 Analysis:", formatted)
                 formatted = re.sub(r"\[SUMMARY\]", "\n\n### 📝 Summary:", formatted)
                 formatted = re.sub(
                     r"\[CHECKPOINT.*?\]", "\n\n### 💾 Checkpoint:", formatted
@@ -1165,10 +1238,12 @@ def update_dashboard():
 
     except Exception as e:
         print(f"Dashboard update error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 # Periodic updates
-cb = pn.state.add_periodic_callback(update_dashboard, period=750)
+pn.state.add_periodic_callback(update_dashboard, period=750)
 
 # Optional: periodically refresh version options so new reports appear in the picker
 pn.state.add_periodic_callback(
@@ -1188,9 +1263,9 @@ sidebar = pn.Column(
 
 main = pn.Column(
     pn.Row(activity_pane, search_pane, sizing_mode="stretch_width"),
-    history_controls,  # ← new: filter + version picker
-    report_info_pane,  # ← shows current report index/time/task
-    report_nav_row,  # ← ◀ Previous / Next ▶ navigation
+    history_controls,  # filter + version picker
+    report_info_pane,  # shows current report index/time/task
+    report_nav_row,  # ◀ Previous / Next ▶ navigation
     notes_pane,
     sizing_mode="stretch_width",
 )

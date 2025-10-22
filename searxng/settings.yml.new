@@ -24,7 +24,6 @@ brand:
   wiki_url: https://github.com/searxng/searxng/wiki
   issue_url: https://github.com/searxng/searxng/issues
   # custom:
-  #   maintainer: "Jon Doe"
   #   # Custom entries in the footer: [title]: [link]
   #   links:
   #     Uptime: https://uptime.searxng.org/history/darmarit-org
@@ -139,7 +138,7 @@ ui:
   # Open result links in a new tab by default
   # results_on_new_tab: false
   theme_args:
-    # style of simple theme: auto, light, dark
+    # style of simple theme: auto, light, dark, black
     simple_style: auto
   # Perform search immediately if a category selected.
   # Disable to select multiple categories at once and start the search manually.
@@ -407,13 +406,12 @@ engines:
       require_api_key: false
       results: JSON
 
-  # - name: astrophysics data system
-  #   engine: astrophysics_data_system
-  #   sort: asc
-  #   weight: 5
-  #   categories: [science]
-  #   api_key: your-new-key
-  #   shortcut: ads
+  - name: astrophysics data system
+    engine: astrophysics_data_system
+    shortcut: ads
+    # read https://docs.searxng.org/dev/engines/online/astrophysics_data_system.html
+    api_key: ""
+    inactive: true
 
   - name: alpine linux packages
     engine: alpinelinux
@@ -424,6 +422,7 @@ engines:
     engine: annas_archive
     disabled: true
     shortcut: aa
+    timeout: 5
 
   - name: ansa
     engine: ansa
@@ -490,12 +489,20 @@ engines:
   - name: arxiv
     engine: arxiv
     shortcut: arx
-    timeout: 4.0
 
   - name: ask
     engine: ask
     shortcut: ask
     disabled: true
+
+  # - name: azure
+  #   engine: azure
+  #   shortcut: az
+  #   categories: [it, cloud]
+  #   azure_tenant_id: "your_tenant_id"
+  #   azure_client_id: "your_client_id"
+  #   azure_client_secret: "your_client_secret"
+  #   disabled: true
 
   # tmp suspended:  dh key too small
   # - name: base
@@ -659,18 +666,12 @@ engines:
     timeout: 30
     disabled: true
 
-  # - name: core.ac.uk
-  #   engine: core
-  #   categories: science
-  #   shortcut: cor
-  #   # get your API key from: https://core.ac.uk/api-keys/register/
-  #   api_key: 'unset'
-
-  - name: cppreference
-    engine: cppreference
-    shortcut: cpp
-    paging: false
-    disabled: true
+  - name: core.ac.uk
+    engine: core
+    shortcut: cor
+    # read https://docs.searxng.org/dev/engines/online/core.html
+    api_key: ""
+    inactive: true
 
   - name: crossref
     engine: crossref
@@ -718,7 +719,6 @@ engines:
 
   - name: currency
     engine: currency_convert
-    categories: general
     shortcut: cc
 
   - name: deezer
@@ -1255,9 +1255,10 @@ engines:
   - name: z-library
     engine: zlibrary
     shortcut: zlib
-    categories: files
     timeout: 7.0
     disabled: true
+    # https://github.com/searxng/searxng/issues/3610
+    inactive: true
 
   - name: library of congress
     engine: loc
@@ -1518,7 +1519,7 @@ engines:
   - name: openlibrary
     engine: openlibrary
     shortcut: ol
-    timeout: 5
+    timeout: 10
     disabled: true
 
   - name: openmeteo
@@ -1736,7 +1737,6 @@ engines:
   - name: pubmed
     engine: pubmed
     shortcut: pub
-    timeout: 3.0
 
   - name: pypi
     shortcut: pypi
@@ -1966,7 +1966,6 @@ engines:
 
   - name: semantic scholar
     engine: semantic_scholar
-    disabled: true
     shortcut: se
 
   # Spotify needs API credentials
@@ -1987,13 +1986,13 @@ engines:
   #   query_fields: '' # query fields
   #   enable_http: true
 
-  # - name: springer nature
-  #   engine: springer
-  #   # get your API key from: https://dev.springernature.com/signup
-  #   # working API key, for test & debug: "a69685087d07eca9f13db62f65b8f601"
-  #   api_key: 'unset'
-  #   shortcut: springer
-  #   timeout: 15.0
+  - name: springer nature
+    engine: springer
+    shortcut: springer
+    timeout: 5
+    # read https://docs.searxng.org/dev/engines/online/springer.html
+    api_key: ""
+    inactive: true
 
   - name: startpage
     engine: startpage

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Plus,
   Search,
@@ -18,19 +18,38 @@ import {
   Trash2,
   Zap,
   Activity,
+  MessageCircle,
 } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { X } from "lucide-react";
+import logo from "./assets/logo.png";
 
 // ==========================
 // API Configuration
 // ==========================
-const API_BASE_URL = "http://localhost:8000/api/v1";
+const API_BASE_URL = window.location.hostname === 'localhost' 
+  ? "http://localhost:8000/api/v1" 
+  : "http://backend:8000/api/v1";
 
 // ==========================
 // Types
 // ==========================
+interface Subtask {
+  order: number;
+  description: string;
+  success_criteria: string;
+  status: "pending" | "in_progress" | "completed";
+  findings?: string[];
+}
+
+interface ResearchPlan {
+  restated_task: string;
+  subtasks: Subtask[];
+  current_subtask_index: number;
+  created_at: number;
+}
+
 interface Metrics {
   searchCount: number;
   thinkCount: number;
@@ -111,15 +130,18 @@ interface SystemMetrics {
 // ==========================
 type OllamaMode = "local" | "docker";
 type Orchestrator = "hummingbird" | "kestrel" | "albatross";
+type Theme = "amber" | "blue";
 
 interface AppSettings {
   ollamaMode: OllamaMode;
   orchestrator: Orchestrator;
+  theme: Theme;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   ollamaMode: "local",
   orchestrator: "kestrel",
+  theme: "amber",
 };
 
 // ==========================
@@ -237,6 +259,16 @@ class KestrelAPI {
     };
   }
 
+  async getTaskResearchPlan(taskId: string): Promise<ResearchPlan | null> {
+    try {
+      const res = await this.fetch(`/tasks/${taskId}/research-plan`);
+      return res?.message ? null : res;
+    } catch (err) {
+      console.warn("Failed to get research plan:", err);
+      return null;
+    }
+  }
+
   // ---- Export ----
   async exportTask(taskId: string, format: "json" | "pdf" | "markdown" = "json"): Promise<Blob> {
     const response = await fetch(`${this.baseURL}/tasks/${taskId}/export?format=${format}`);
@@ -245,6 +277,18 @@ class KestrelAPI {
   }
 
   // ---- Settings (best-effort, non-throwing) ----
+  async getSettings(): Promise<AppSettings | null> {
+    try {
+      const res = await fetch(`${this.baseURL}/settings`);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (err) {
+      console.warn("Settings GET error:", err);
+    }
+    return null;
+  }
+
   async saveSettings(settings: AppSettings): Promise<void> {
     try {
       const res = await fetch(`${this.baseURL}/settings`, {
@@ -336,7 +380,7 @@ const mdComponents: Components = {
     <a
       target="_blank"
       rel="noopener noreferrer"
-      className="text-amber-600 hover:text-amber-700 underline"
+      className="theme-text-primary-600 hover:theme-text-primary-700 underline"
       {...props}
     />
   ),
@@ -350,7 +394,7 @@ const mdComponents: Components = {
   li: ({ node, ...props }) => <li className="marker:text-gray-600" {...props} />,
   blockquote: ({ node, ...props }) => (
     <blockquote
-      className="border-l-4 border-amber-400 pl-4 my-2 text-gray-700"
+      className="border-l-4 theme-border-primary-400 pl-4 my-2 text-gray-700"
       {...props}
     />
   ),
@@ -359,7 +403,7 @@ const mdComponents: Components = {
   ),
 
   // Properly typed `code` with `inline`
-  code({ inline, className, children, ...props }) {
+  code({ inline, className, children, ...props }: { inline?: boolean; className?: string; children?: React.ReactNode; [key: string]: any }) {
     return inline ? (
       <code className="bg-gray-100 px-1 py-0.5 rounded text-sm" {...props}>
         {children}
@@ -788,18 +832,81 @@ function useMetrics(taskId: string | null) {
   return { metrics, isLoading, setMetrics };
 }
 
+function useResearchPlan(taskId: string | null) {
+  const [researchPlan, setResearchPlan] = useState<ResearchPlan | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!taskId) return;
+
+    const loadResearchPlan = async () => {
+      try {
+        setIsLoading(true);
+        const data = await api.getTaskResearchPlan(taskId);
+        setResearchPlan(data);
+      } catch (err) {
+        console.error("Failed to load research plan:", err);
+        setResearchPlan(null);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadResearchPlan();
+
+    // Poll every 30 seconds (WS will push more frequent updates)
+    const interval = setInterval(loadResearchPlan, 30000);
+    return () => clearInterval(interval);
+  }, [taskId]);
+
+  return { researchPlan, isLoading, setResearchPlan };
+}
+
 // ==========================
 // Hook: App Settings
 // ==========================
 function useAppSettings() {
-  const [settings, setSettings] = useState<AppSettings>(() => {
-    try {
-      const raw = localStorage.getItem("kestrel.settings");
-      return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : DEFAULT_SETTINGS;
-    } catch {
-      return DEFAULT_SETTINGS;
-    }
-  });
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Load settings on mount
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        // First try to get settings from backend
+        const backendSettings = await api.getSettings();
+        if (backendSettings) {
+          setSettings(backendSettings);
+          // Also save to localStorage as backup
+          localStorage.setItem("kestrel.settings", JSON.stringify(backendSettings));
+        } else {
+          // Fallback to localStorage
+          const raw = localStorage.getItem("kestrel.settings");
+          if (raw) {
+            const localSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+            setSettings(localSettings);
+            // Try to sync to backend
+            api.saveSettings(localSettings);
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to load settings:", error);
+        // Fallback to localStorage
+        try {
+          const raw = localStorage.getItem("kestrel.settings");
+          if (raw) {
+            setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(raw) });
+          }
+        } catch {
+          // Use default settings
+        }
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadSettings();
+  }, []);
 
   const updateSettings = async (patch: Partial<AppSettings>) => {
     const next = { ...settings, ...patch };
@@ -812,7 +919,19 @@ function useAppSettings() {
     api.saveSettings(next);
   };
 
-  return { settings, updateSettings };
+  return { settings, updateSettings, isLoading };
+}
+
+// ==========================
+// Hook: Theme Management
+// ==========================
+function useTheme(settings: AppSettings) {
+  useEffect(() => {
+    // Apply theme to document
+    document.documentElement.setAttribute('data-theme', settings.theme);
+  }, [settings.theme]);
+
+  return settings.theme;
 }
 
 // ==========================
@@ -826,6 +945,7 @@ function useTaskRealtime(
     onSearch: (entry: SearchEntry) => void;
     onReport: (entry: Report) => void;
     onMetrics: (m: SystemMetrics) => void;
+    onResearchPlan: (plan: ResearchPlan) => void;
   }
 ) {
   useEffect(() => {
@@ -852,6 +972,13 @@ function useTaskRealtime(
             break;
           case "metrics":
             handlers.onMetrics(payload as SystemMetrics);
+            break;
+          case "research_plan":
+            try {
+              handlers.onResearchPlan(payload as ResearchPlan);
+            } catch (e) {
+              console.error("Failed to handle research plan update:", e);
+            }
             break;
           default:
             break;
@@ -901,8 +1028,8 @@ function TaskItem({
       onClick={onSelect}
       className={`group relative rounded-lg px-3 py-2 cursor-pointer transition-all ${
         isSelected
-          ? "bg-amber-600/30 backdrop-blur border border-amber-500/30"
-          : "hover:bg-amber-700/20 hover:backdrop-blur"
+          ? "theme-bg-primary-600-30 backdrop-blur border theme-border-primary-500-30"
+          : "hover:theme-bg-primary-700-20 hover:backdrop-blur"
       }`}
     >
       {isEditing ? (
@@ -924,7 +1051,7 @@ function TaskItem({
             }
           }}
           onClick={(e) => e.stopPropagation()}
-          className="w-full px-2 py-1 text-sm bg-amber-50 text-gray-900 rounded border border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500"
+          className="w-full px-2 py-1 text-sm theme-bg-primary-50 text-gray-900 rounded border theme-border-primary-400 focus:outline-none focus:ring-2 focus:ring-theme-border-primary-500"
           autoFocus
         />
       ) : (
@@ -932,36 +1059,36 @@ function TaskItem({
           <div className="flex items-start gap-2">
             <span className="text-lg mt-0.5">{statusIcon[task.status]}</span>
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium truncate text-amber-50">
+              <div className="text-sm font-medium truncate theme-text-primary-50">
                 {task.name}
                 {task.isDraft && (
-                  <span className="ml-1 text-[10px] text-amber-200/80">(draft)</span>
+                  <span className="ml-1 text-[10px] theme-text-primary-200-80">(draft)</span>
                 )}
               </div>
-              <div className="text-xs text-amber-200/70">{formatDate(task.updatedAt)}</div>
+              <div className="text-xs theme-text-primary-200-70">{formatDate(task.updatedAt)}</div>
             </div>
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 setShowMenu(!showMenu);
               }}
-              className={`p-1 rounded hover:bg-amber-600/30 ${
+              className={`p-1 rounded hover:theme-bg-primary-600-30 ${
                 showMenu || isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
               } transition-opacity`}
             >
-              <MoreHorizontal className="w-4 h-4 text-amber-200" />
+              <MoreHorizontal className="w-4 h-4 theme-text-primary-200" />
             </button>
           </div>
 
           {showMenu && (
-            <div className="absolute right-0 top-8 bg-amber-50 rounded-lg shadow-lg border border-amber-200 py-1 z-10 w-32">
+            <div className="absolute right-0 top-8 theme-bg-primary-50 rounded-lg shadow-lg border theme-border-primary-200 py-1 z-50 w-32">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   setIsEditing(true);
                   setShowMenu(false);
                 }}
-                className="w-full px-3 py-1.5 text-left text-sm hover:bg-amber-100 flex items-center gap-2 text-gray-700"
+                className="w-full px-3 py-1.5 text-left text-sm hover:theme-bg-primary-100 flex items-center gap-2 text-gray-700"
               >
                 <Edit3 className="w-3 h-3" /> Rename
               </button>
@@ -973,7 +1100,7 @@ function TaskItem({
                   }
                   setShowMenu(false);
                 }}
-                className="w-full px-3 py-1.5 text-left text-sm hover:bg-amber-100 flex items-center gap-2 text-red-600"
+                className="w-full px-3 py-1.5 text-left text-sm hover:theme-bg-primary-100 flex items-center gap-2 text-red-600"
               >
                 <Trash2 className="w-3 h-3" /> Delete
               </button>
@@ -1058,7 +1185,7 @@ function TaskConfiguration({
               <button
                 key={template.id}
                 onClick={() => handleTemplateSelect(template)}
-                className="p-4 bg-white rounded-xl border-2 border-gray-200 hover:border-amber-400 hover:shadow-md transition-all text-left"
+                className="p-4 bg-white rounded-xl border-2 border-gray-200 hover:theme-border-primary-400 hover:shadow-md transition-all text-left"
               >
                 <div className="text-2xl mb-2">{template.icon}</div>
                 <h3 className="font-semibold text-gray-900 mb-1">{template.name}</h3>
@@ -1081,7 +1208,7 @@ function TaskConfiguration({
               value={task.name}
               onChange={(e) => onUpdate({ name: e.target.value })}
               placeholder="e.g., AI Research Grants"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-theme-border-primary-500 focus:border-transparent"
             />
           </div>
 
@@ -1094,7 +1221,7 @@ function TaskConfiguration({
               onChange={(e) => onUpdate({ description: e.target.value })}
               placeholder="Describe what you want Kestrel to research..."
               rows={6}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent resize-none"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-theme-border-primary-500 focus:border-transparent resize-none"
             />
             <p className="text-xs text-gray-500 mt-2">
               Be specific about eligibility criteria, deadlines, and what information to
@@ -1118,11 +1245,11 @@ function TaskConfiguration({
                 }
                 className="flex-1"
               />
-              <div className="px-4 py-2 bg-amber-50 rounded-lg min-w-[120px] text-center">
-                <span className="text-2xl font-bold text-amber-700">
+              <div className="px-4 py-2 theme-bg-primary-50 rounded-lg min-w-[120px] text-center">
+                <span className="text-2xl font-bold theme-text-primary-700">
                   {task.budgetMinutes}
                 </span>
-                <span className="text-sm text-amber-600 ml-1">minutes</span>
+                <span className="text-sm theme-text-primary-600 ml-1">minutes</span>
               </div>
             </div>
           </div>
@@ -1133,7 +1260,7 @@ function TaskConfiguration({
               disabled={!canStart}
               className={`w-full py-3 rounded-lg font-semibold transition-all flex items-center justify-center gap-2 ${
                 canStart
-                  ? "bg-gradient-to-r from-amber-600 to-orange-500 text-white hover:shadow-lg"
+                  ? "theme-gradient-bg text-white hover:shadow-lg"
                   : "bg-gray-200 text-gray-400 cursor-not-allowed"
               }`}
             >
@@ -1146,6 +1273,127 @@ function TaskConfiguration({
               </p>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==========================
+// Research Plan Widget
+// ==========================
+function ResearchPlanWidget({ researchPlan }: { researchPlan: ResearchPlan | null }) {
+  if (!researchPlan) {
+    return (
+      <div className="bg-white/90 backdrop-blur rounded-xl border theme-border-primary-200 shadow-lg">
+        <div className="p-4 border-b theme-border-primary-100 theme-bg-primary-50">
+          <h3 className="font-bold text-gray-900 flex items-center gap-2">
+            <Brain className="w-4 h-4 theme-text-primary-600" />
+            Research Plan
+          </h3>
+        </div>
+        <div className="p-6 text-center text-gray-500">
+          <div className="text-4xl mb-2">📋</div>
+          <p>Research plan will be generated when the task starts</p>
+        </div>
+      </div>
+    );
+  }
+
+  const completedCount = researchPlan.subtasks.filter(s => s.status === "completed").length;
+  const totalCount = researchPlan.subtasks.length;
+  const progressPercentage = (completedCount / totalCount) * 100;
+
+  return (
+    <div className="bg-white/90 backdrop-blur rounded-xl border theme-border-primary-200 shadow-lg">
+      <div className="p-4 border-b theme-border-primary-100 theme-bg-primary-50">
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-gray-900 flex items-center gap-2">
+            <Brain className="w-4 h-4 theme-text-primary-600" />
+            Research Plan
+          </h3>
+          <div className="text-sm text-gray-600">
+            {completedCount}/{totalCount} completed
+          </div>
+        </div>
+        <div className="mt-2">
+          <div className="flex justify-between text-xs text-gray-600 mb-1">
+            <span>Progress</span>
+            <span className="font-semibold">{progressPercentage.toFixed(1)}%</span>
+          </div>
+          <div className="h-2 theme-bg-primary-100 rounded-full overflow-hidden">
+            <div
+              className="h-full theme-gradient-bg transition-all duration-500"
+              style={{ width: `${progressPercentage}%` }}
+            />
+          </div>
+        </div>
+      </div>
+      
+      <div className="p-4">
+        <div className="mb-4">
+          <h4 className="text-sm font-semibold text-gray-700 mb-2">Task Restatement</h4>
+          <p className="text-sm text-gray-600 theme-bg-primary-50 p-3 rounded-lg border theme-border-primary-100">
+            {researchPlan.restated_task}
+          </p>
+        </div>
+        
+        <div className="space-y-3">
+          <h4 className="text-sm font-semibold text-gray-700">Research Steps</h4>
+          {researchPlan.subtasks.map((subtask) => {
+            const isCompleted = subtask.status === "completed";
+            const isInProgress = subtask.status === "in_progress";
+            
+            return (
+              <div
+                key={subtask.order}
+                className={`p-3 rounded-lg border transition-all ${
+                  isCompleted
+                    ? "bg-green-50 border-green-200"
+                    : isInProgress
+                    ? "theme-bg-primary-50 theme-border-primary-200 ring-2 ring-theme-border-primary-300"
+                    : "bg-gray-50 border-gray-200"
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                    isCompleted
+                      ? "bg-green-500 text-white"
+                      : isInProgress
+                      ? "theme-bg-primary-500 text-white"
+                      : "bg-gray-300 text-gray-600"
+                  }`}>
+                    {isCompleted ? "✓" : subtask.order}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <h5 className={`text-sm font-semibold ${
+                        isCompleted ? "text-green-800" : isInProgress ? "theme-text-primary-800" : "text-gray-700"
+                      }`}>
+                        Step {subtask.order}: {subtask.description}
+                      </h5>
+                      {isInProgress && (
+                        <span className="inline-block w-2 h-2 theme-bg-primary-500 rounded-full animate-pulse" />
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-600 mb-2">
+                      <span className="font-medium">Success Criteria:</span> {subtask.success_criteria}
+                    </p>
+                    {isCompleted && (
+                      <div className="text-xs text-green-700 font-medium">
+                        ✓ Completed
+                      </div>
+                    )}
+                    {isInProgress && (
+                      <div className="text-xs theme-text-primary-700 font-medium">
+                        🔄 In Progress
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -1169,6 +1417,7 @@ function TaskDashboard({
   const { searches, appendSearch } = useSearchHistory(task.id);
   const { reports, appendReport } = useReports(task.id);
   const { metrics, setMetrics } = useMetrics(task.id);
+  const { researchPlan, setResearchPlan } = useResearchPlan(task.id);
 
   // Reset report index when reports change
   useEffect(() => {
@@ -1185,6 +1434,9 @@ function TaskDashboard({
       if (u?.metrics) {
         merged.metrics = { ...(task.metrics || {}), ...(u.metrics as Metrics) };
       }
+      if (u?.research_plan) {
+        setResearchPlan(u.research_plan);
+      }
       onUpdate(task.id, merged);
       if (u?.status) setIsPaused(u.status === "paused");
     },
@@ -1196,6 +1448,7 @@ function TaskDashboard({
       setCurrentReportIndex(0);
     },
     onMetrics: setMetrics,
+    onResearchPlan: setResearchPlan,
   });
 
   const handlePauseResume = async () => {
@@ -1239,9 +1492,9 @@ function TaskDashboard({
   const currentReport = reports[currentReportIndex];
 
   return (
-    <div className="flex-1 overflow-y-auto bg-gradient-to-br from-amber-50/50 via-white to-orange-50/50">
+    <div className="flex-1 overflow-y-auto theme-gradient-bg">
       {/* Header Bar */}
-      <div className="bg-white/80 backdrop-blur border-b border-amber-200 sticky top-0 z-10">
+      <div className="bg-white/80 backdrop-blur border-b theme-border-primary-200 sticky top-0 z-10">
         <div className="px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -1254,8 +1507,8 @@ function TaskDashboard({
             </div>
 
             <div className="flex items-center gap-3">
-              <div className="px-4 py-2 bg-gradient-to-r from-amber-900 to-orange-900 rounded-lg shadow-inner">
-                <div className="text-lg font-mono font-bold text-amber-400">
+              <div className="px-4 py-2 theme-sidebar-gradient rounded-lg shadow-inner">
+                <div className="text-lg font-mono font-bold theme-text-primary-400">
                   {formatElapsed(task.elapsed)}
                 </div>
               </div>
@@ -1265,7 +1518,7 @@ function TaskDashboard({
                 className={`px-4 py-2 rounded-lg font-semibold transition-all flex items-center gap-2 ${
                   isPaused
                     ? "bg-green-600 hover:bg-green-700 text-white shadow-lg"
-                    : "bg-amber-600 hover:bg-amber-700 text-white shadow-lg"
+                    : "theme-bg-primary-600 hover:theme-bg-primary-700 text-white shadow-lg"
                 }`}
               >
                 {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
@@ -1274,17 +1527,17 @@ function TaskDashboard({
 
               <button
                 onClick={() => handleExport("json")}
-                className="p-2 hover:bg-amber-100 rounded-lg transition-colors"
+                className="p-2 hover:theme-bg-primary-100 rounded-lg transition-colors"
                 title="Export as JSON"
               >
-                <Download className="w-5 h-5 text-amber-700" />
+                <Download className="w-5 h-5 theme-text-primary-700" />
               </button>
               <button
                 onClick={() => handleExport("markdown")}
-                className="p-2 hover:bg-amber-100 rounded-lg transition-colors"
+                className="p-2 hover:theme-bg-primary-100 rounded-lg transition-colors"
                 title="Export as Markdown"
               >
-                <FileText className="w-5 h-5 text-amber-700" />
+                <FileText className="w-5 h-5 theme-text-primary-700" />
               </button>
             </div>
           </div>
@@ -1293,7 +1546,7 @@ function TaskDashboard({
 
       <div className="p-6 space-y-6">
         {/* Progress Overview */}
-        <div className="bg-white/90 backdrop-blur rounded-xl border border-amber-200 p-6 shadow-lg">
+        <div className="bg-white/90 backdrop-blur rounded-xl border theme-border-primary-200 p-6 shadow-lg">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-gray-900">Task Progress</h2>
             <span
@@ -1303,7 +1556,7 @@ function TaskDashboard({
                   : task.status === "complete"
                   ? "bg-gradient-to-r from-blue-500 to-sky-500"
                   : task.status === "paused"
-                  ? "bg-gradient-to-r from-amber-500 to-orange-500"
+                  ? "theme-gradient-bg"
                   : task.status === "failed"
                   ? "bg-gradient-to-r from-red-500 to-rose-500"
                   : "bg-gradient-to-r from-gray-400 to-gray-500"
@@ -1323,41 +1576,41 @@ function TaskDashboard({
                 {typeof task.progress === "number" ? task.progress.toFixed(1) : "0.0"}%
               </span>
             </div>
-            <div className="h-3 bg-amber-100 rounded-full overflow-hidden">
+            <div className="h-3 theme-bg-primary-100 rounded-full overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-500 shadow-inner"
+                className="h-full theme-gradient-bg transition-all duration-500 shadow-inner"
                 style={{ width: `${task.progress || 0}%` }}
               />
             </div>
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-lg p-3 text-center border border-amber-200">
-              <div className="text-2xl font-bold text-amber-700">
+            <div className="theme-bg-primary-50 rounded-lg p-3 text-center border theme-border-primary-200">
+              <div className="text-2xl font-bold theme-text-primary-700">
                 {task.metrics?.searchCount ?? 0}
               </div>
               <div className="text-xs uppercase text-gray-600 font-semibold">
                 Searches
               </div>
             </div>
-            <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-lg p-3 text-center border border-amber-200">
-              <div className="text-2xl font-bold text-amber-700">
+            <div className="theme-bg-primary-50 rounded-lg p-3 text-center border theme-border-primary-200">
+              <div className="text-2xl font-bold theme-text-primary-700">
                 {task.metrics?.thinkCount ?? 0}
               </div>
               <div className="text-xs uppercase text-gray-600 font-semibold">
                 Analysis
               </div>
             </div>
-            <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-lg p-3 text-center border-amber-200">
-              <div className="text-2xl font-bold text-amber-700">
+            <div className="theme-bg-primary-50 rounded-lg p-3 text-center border theme-border-primary-200">
+              <div className="text-2xl font-bold theme-text-primary-700">
                 {task.metrics?.summaryCount ?? 0}
               </div>
               <div className="text-xs uppercase text-gray-600 font-semibold">
                 Summaries
               </div>
             </div>
-            <div className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-lg p-3 text-center border border-amber-200">
-              <div className="text-2xl font-bold text-amber-700">
+            <div className="theme-bg-primary-50 rounded-lg p-3 text-center border theme-border-primary-200">
+              <div className="text-2xl font-bold theme-text-primary-700">
                 {task.metrics?.checkpointCount ?? 0}
               </div>
               <div className="text-xs uppercase text-gray-600 font-semibold">
@@ -1369,40 +1622,40 @@ function TaskDashboard({
 
         {/* System Metrics */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border border-amber-200 shadow-md hover:shadow-lg transition-shadow">
+          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
-              <Brain className="w-4 h-4 text-amber-600" />
-              <span className="text-2xl font-bold text-amber-700">{metrics.llmCalls}</span>
+              <Brain className="w-4 h-4 theme-text-primary-600" />
+              <span className="text-2xl font-bold theme-text-primary-700">{metrics.llmCalls}</span>
             </div>
             <div className="text-xs uppercase text-gray-600 font-semibold">LLM Calls</div>
           </div>
-          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border border-amber-200 shadow-md hover:shadow-lg transition-shadow">
+          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
-              <Search className="w-4 h-4 text-amber-600" />
-              <span className="text-2xl font-bold text-amber-700">{metrics.searches}</span>
+              <Search className="w-4 h-4 theme-text-primary-600" />
+              <span className="text-2xl font-bold theme-text-primary-700">{metrics.searches}</span>
             </div>
             <div className="text-xs uppercase text-gray-600 font-semibold">Searches</div>
           </div>
-          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border border-amber-200 shadow-md hover:shadow-lg transition-shadow">
+          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
-              <Globe className="w-4 h-4 text-amber-600" />
-              <span className="text-2xl font-bold text-amber-700">
+              <Globe className="w-4 h-4 theme-text-primary-600" />
+              <span className="text-2xl font-bold theme-text-primary-700">
                 {metrics.pagesAnalyzed}
               </span>
             </div>
             <div className="text-xs uppercase text-gray-600 font-semibold">Pages</div>
           </div>
-          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border border-amber-200 shadow-md hover:shadow-lg transition-shadow">
+          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
-              <FileText className="w-4 h-4 text-amber-600" />
-              <span className="text-2xl font-bold text-amber-700">{metrics.summaries}</span>
+              <FileText className="w-4 h-4 theme-text-primary-600" />
+              <span className="text-2xl font-bold theme-text-primary-700">{metrics.summaries}</span>
             </div>
             <div className="text-xs uppercase text-gray-600 font-semibold">Summaries</div>
           </div>
-          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border border-amber-200 shadow-md hover:shadow-lg transition-shadow">
+          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
-              <Save className="w-4 h-4 text-amber-600" />
-              <span className="text-2xl font-bold text-amber-700">
+              <Save className="w-4 h-4 theme-text-primary-600" />
+              <span className="text-2xl font-bold theme-text-primary-700">
                 {metrics.checkpoints}
               </span>
             </div>
@@ -1412,13 +1665,16 @@ function TaskDashboard({
           </div>
         </div>
 
+        {/* Research Plan */}
+        <ResearchPlanWidget researchPlan={researchPlan} />
+
         {/* Activity and Search */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Activity Feed */}
-          <div className="bg-white/90 backdrop-blur rounded-xl border border-amber-200 shadow-lg">
-            <div className="p-4 border-b border-amber-100 bg-gradient-to-r from-amber-50 to-orange-50">
+          <div className="bg-white/90 backdrop-blur rounded-xl border theme-border-primary-200 shadow-lg">
+            <div className="p-4 border-b theme-border-primary-100 theme-bg-primary-50">
               <h3 className="font-bold text-gray-900 flex items-center gap-2">
-                <Activity className="w-4 h-4 text-amber-600" />
+                <Activity className="w-4 h-4 theme-text-primary-600" />
                 Live Activity
               </h3>
             </div>
@@ -1426,9 +1682,9 @@ function TaskDashboard({
               {activity.map((entry) => (
                 <div
                   key={entry.id}
-                  className="flex items-center gap-3 p-2 bg-gradient-to-r from-amber-50 to-orange-50 rounded-lg border border-amber-100"
+                  className="flex items-center gap-3 p-2 theme-bg-primary-50 rounded-lg border theme-border-primary-100"
                 >
-                  <span className="text-xs font-mono text-amber-700 font-semibold min-w-[60px]">
+                  <span className="text-xs font-mono theme-text-primary-700 font-semibold min-w-[60px]">
                     {entry.time}
                   </span>
                   <span className="text-sm text-gray-700">{entry.message}</span>
@@ -1438,10 +1694,10 @@ function TaskDashboard({
           </div>
 
           {/* Search History */}
-          <div className="bg-white/90 backdrop-blur rounded-xl border border-amber-200 shadow-lg">
-            <div className="p-4 border-b border-amber-100 bg-gradient-to-r from-amber-50 to-orange-50">
+          <div className="bg-white/90 backdrop-blur rounded-xl border theme-border-primary-200 shadow-lg">
+            <div className="p-4 border-b theme-border-primary-100 theme-bg-primary-50">
               <h3 className="font-bold text-gray-900 flex items-center gap-2">
-                <Search className="w-4 h-4 text-amber-600" />
+                <Search className="w-4 h-4 theme-text-primary-600" />
                 Search Intelligence
               </h3>
             </div>
@@ -1449,13 +1705,13 @@ function TaskDashboard({
               {searches.map((search) => (
                 <div
                   key={search.id}
-                  className="flex items-center gap-2 p-2 bg-gradient-to-r from-amber-50 to-orange-50 rounded-lg text-xs border border-amber-100"
+                  className="flex items-center gap-2 p-2 theme-bg-primary-50 rounded-lg text-xs border theme-border-primary-100"
                 >
-                  <span className="font-mono text-amber-700 font-semibold min-w-[55px]">
+                  <span className="font-mono theme-text-primary-700 font-semibold min-w-[55px]">
                     {search.time}
                   </span>
                   <span className="flex-1 text-gray-700 truncate">{search.query}</span>
-                  <span className="font-bold text-amber-700">({search.results})</span>
+                  <span className="font-bold theme-text-primary-700">({search.results})</span>
                 </div>
               ))}
             </div>
@@ -1464,8 +1720,8 @@ function TaskDashboard({
 
         {/* Reports */}
         {reports.length > 0 && (
-          <div className="bg-white/90 backdrop-blur rounded-xl border border-amber-200 shadow-lg">
-            <div className="p-4 border-b border-amber-100 bg-gradient-to-r from-amber-50 to-orange-50">
+          <div className="bg-white/90 backdrop-blur rounded-xl border theme-border-primary-200 shadow-lg">
+            <div className="p-4 border-b theme-border-primary-100 theme-bg-primary-50">
               <div className="flex items-center justify-between">
                 <h3 className="font-bold text-gray-900">
                   {currentReport?.title || "Research Report"}
@@ -1474,9 +1730,9 @@ function TaskDashboard({
                   <button
                     onClick={() => setCurrentReportIndex((i) => Math.max(0, i - 1))}
                     disabled={currentReportIndex === 0}
-                    className="p-1 hover:bg-amber-100 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    className="p-1 hover:theme-bg-primary-100 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    <ChevronLeft className="w-4 h-4 text-amber-700" />
+                    <ChevronLeft className="w-4 h-4 theme-text-primary-700" />
                   </button>
                   <span className="text-sm text-gray-600 px-2 min-w-[60px] text-center">
                     {currentReportIndex + 1} / {reports.length}
@@ -1484,9 +1740,9 @@ function TaskDashboard({
                   <button
                     onClick={() => setCurrentReportIndex((i) => Math.min(reports.length - 1, i + 1))}
                     disabled={currentReportIndex === reports.length - 1}
-                    className="p-1 hover:bg-amber-100 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    className="p-1 hover:theme-bg-primary-100 rounded disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
-                    <ChevronRight className="w-4 h-4 text-amber-700" />
+                    <ChevronRight className="w-4 h-4 theme-text-primary-700" />
                   </button>
                 </div>
               </div>
@@ -1534,7 +1790,7 @@ function SettingsModal({
     <div
       className={[
         "p-4 rounded-xl border-2 transition-all bg-white",
-        selected ? "border-amber-500 shadow-md ring-2 ring-amber-200" : "border-gray-200 hover:border-amber-300",
+        selected ? "theme-border-primary-500 shadow-md ring-2 ring-theme-border-primary-200" : "border-gray-200 hover:theme-border-primary-300",
       ].join(" ")}
     >
       {children}
@@ -1547,17 +1803,47 @@ function SettingsModal({
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
       {/* Dialog */}
       <div className="absolute inset-0 flex items-center justify-center p-4">
-        <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-amber-200 overflow-hidden">
+        <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border theme-border-primary-200 overflow-hidden">
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-amber-200">
+          <div className="flex items-center justify-between px-6 py-4 theme-bg-primary-50 border-b theme-border-primary-200">
             <h2 className="text-lg font-bold text-gray-900">Settings</h2>
-            <button onClick={onClose} className="p-2 rounded hover:bg-amber-100">
-              <X className="w-5 h-5 text-amber-700" />
+            <button onClick={onClose} className="p-2 rounded hover:theme-bg-primary-100">
+              <X className="w-5 h-5 theme-text-primary-700" />
             </button>
           </div>
 
           {/* Body */}
           <div className="p-6 space-y-6">
+            {/* Theme selection */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">Theme</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => onChange({ theme: "amber" })}>
+                  <SelFrame selected={settings.theme === "amber"}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-4 h-4 rounded-full bg-gradient-to-r from-amber-400 to-orange-500"></div>
+                      <div className="font-semibold text-gray-900">Amber</div>
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      Warm orange and amber tones for a cozy feel.
+                    </div>
+                  </SelFrame>
+                </button>
+
+                <button onClick={() => onChange({ theme: "blue" })}>
+                  <SelFrame selected={settings.theme === "blue"}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-4 h-4 rounded-full bg-gradient-to-r from-blue-400 to-cyan-500"></div>
+                      <div className="font-semibold text-gray-900">Blue</div>
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      Cool blue and cyan tones for a professional look.
+                    </div>
+                  </SelFrame>
+                </button>
+              </div>
+            </section>
+
             {/* Runtime selection */}
             <section>
               <h3 className="text-sm font-semibold text-gray-700 mb-3">Ollama Runtime</h3>
@@ -1662,6 +1948,9 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const { settings, updateSettings } = useAppSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  
+  // Apply theme
+  useTheme(settings);
 
   // Filter tasks based on search
   const filteredTasks = tasks.filter(
@@ -1679,14 +1968,14 @@ export default function App() {
     return (
       <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="text-5xl mb-4 animate-pulse">🦅</div>
+          <img src={logo} alt="KestrelAI Logo" className="w-16 h-16 mb-4 animate-pulse mx-auto" />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-amber-50 flex">
+    <div className="min-h-screen theme-gradient-bg flex">
       {/* Error Toast */}
       {error && (
         <div className="fixed top-4 right-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded z-50">
@@ -1696,7 +1985,7 @@ export default function App() {
 
       {/* Sidebar */}
       <div
-        className={`fixed inset-y-0 left-0 z-40 w-64 bg-gradient-to-b from-amber-900 via-amber-800 to-orange-900 transform transition-transform lg:relative lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 w-64 theme-sidebar-gradient transform transition-transform lg:relative lg:translate-x-0 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -1708,7 +1997,7 @@ export default function App() {
                 const newId = await createTask(); // local draft only
                 setSelectedTaskId(newId);
               }}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-amber-700/50 hover:bg-amber-700/70 backdrop-blur text-amber-50 rounded-lg transition-all border border-amber-600/30"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 theme-bg-primary-700-50 hover:theme-bg-primary-700-70 backdrop-blur theme-text-primary-50 rounded-lg transition-all border theme-border-primary-600-30"
             >
               <Plus className="w-4 h-4" />
               New Task
@@ -1718,12 +2007,12 @@ export default function App() {
           {/* Search */}
           <div className="px-4 pb-2">
             <div className="relative">
-              <Search className="absolute left-3 top-2.5 w-4 h-4 text-amber-300" />
+              <Search className="absolute left-3 top-2.5 w-4 h-4 theme-text-primary-300" />
               <input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search tasks..."
-                className="w-full pl-9 pr-3 py-2 bg-amber-800/30 backdrop-blur text-amber-50 placeholder-amber-300/70 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 border border-amber-700/30"
+                className="w-full pl-9 pr-3 py-2 theme-bg-primary-800-30 backdrop-blur theme-text-primary-50 placeholder-theme-text-primary-300-70 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-theme-border-primary-500 border theme-border-primary-700-30"
               />
             </div>
           </div>
@@ -1755,7 +2044,7 @@ export default function App() {
             <div className="flex items-center gap-3">
               <div className="flex-1">
                 <div className="flex items-center gap-2">
-                  <div className="text-2xl">🦅</div>
+                  <img src={logo} alt="KestrelAI Logo" className="w-6 h-6" />
                   <div>
                     <div className="text-sm font-semibold text-amber-50">
                       KestrelAI
@@ -1764,9 +2053,18 @@ export default function App() {
                   </div>
                 </div>
               </div>
-              <button className="p-2 hover:bg-amber-700/30 rounded-lg transition-colors" onClick={() => setSettingsOpen(true)}>
-                <Settings className="w-4 h-4 text-amber-300" />
-              </button>
+              <div className="flex items-center gap-1">
+                <a 
+                  href="/test" 
+                  className="p-2 hover:bg-amber-700/30 rounded-lg transition-colors"
+                  title="Chat Interface (Test)"
+                >
+                  <MessageCircle className="w-4 h-4 text-amber-300" />
+                </a>
+                <button className="p-2 hover:bg-amber-700/30 rounded-lg transition-colors" onClick={() => setSettingsOpen(true)}>
+                  <Settings className="w-4 h-4 text-amber-300" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1805,7 +2103,7 @@ export default function App() {
         ) : (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
-              <div className="text-6xl mb-4">🦅</div>
+              <img src={logo} alt="KestrelAI Logo" className="w-24 h-24 mb-4 mx-auto" />
               <h2 className="text-2xl font-bold text-gray-900 mb-2">
                 Welcome to KestrelAI
               </h2>

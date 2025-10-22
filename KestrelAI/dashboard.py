@@ -40,11 +40,18 @@ from panel.widgets import Button
 # -----------------------------------------------------------------------------
 # KestrelAI modules
 # -----------------------------------------------------------------------------
-from agents.orchestrator import Orchestrator
-from agents.base import LlmWrapper
-from agents.research_agents import ResearchAgent, SEARCH_RESULTS
-from memory.vector_store import MemoryStore
-from shared.models import Task, TaskStatus
+try:
+    from agents.research_orchestrator import ResearchOrchestrator
+    from agents.base import LlmWrapper
+    from agents.web_research_agent import WebResearchAgent, ResearchConfig
+    from memory.vector_store import MemoryStore
+    from shared.models import Task, TaskStatus
+except ImportError:
+    from KestrelAI.agents.research_orchestrator import ResearchOrchestrator
+    from KestrelAI.agents.base import LlmWrapper
+    from KestrelAI.agents.web_research_agent import WebResearchAgent, ResearchConfig
+    from KestrelAI.memory.vector_store import MemoryStore
+    from KestrelAI.shared.models import Task, TaskStatus
 
 # -----------------------------------------------------------------------------
 # Beautiful Kestrel-inspired CSS
@@ -488,8 +495,8 @@ tasks = [
 # -----------------------------------------------------------------------------
 mem = MemoryStore()
 llm = LlmWrapper(model="gemma3:12b")
-agent = ResearchAgent(mem, llm)
-orch = Orchestrator(tasks, llm)
+# Note: We don't need a separate research agent - the orchestrator handles research internally
+orch = ResearchOrchestrator(tasks, llm, profile="kestrel")
 
 # -----------------------------------------------------------------------------
 # State management
@@ -632,9 +639,14 @@ def orchestration_loop():
     # Do planning phase for first task
     if orch.current and orch.current in orch.tasks:
         first_task = orch.tasks[orch.current]
-        orch._planning_phase(first_task)
-        if orch.research_plan and orch.research_plan.subtasks:
-            state.latest_subtask = orch.research_plan.subtasks[0].description
+        import asyncio
+        asyncio.run(orch._planning_phase(first_task))
+        if hasattr(orch, 'task_states') and orch.current in orch.task_states:
+            task_state = orch.task_states[orch.current]
+            if task_state.research_plan and task_state.research_plan.subtasks:
+                state.latest_subtask = task_state.research_plan.subtasks[0].description
+            else:
+                state.latest_subtask = "Initial research"
 
     while True:
         try:
@@ -668,6 +680,13 @@ def orchestration_loop():
                 if state.task_history[task.name]["start_time"] is None:
                     state.task_history[task.name]["start_time"] = time.time()
 
+                # Get current subtask from orchestrator
+                current_subtask = orch.get_current_subtask(task.name)
+                if current_subtask:
+                    state.latest_subtask = current_subtask
+                else:
+                    state.latest_subtask = "Initial research"
+
                 state.activity_log.append(
                     {
                         "time": datetime.now().strftime("%H:%M:%S"),
@@ -677,18 +696,24 @@ def orchestration_loop():
                 )
                 state.last_update = time.time()
 
-            # Create a modified task with current subtask and feedback
-            temp_task = deepcopy(task)
-            temp_task.description = (
-                task.description
-                + "\nCurrent Subtask: "
-                + state.latest_subtask
-                + "\nCurrent Feedback: "
-                + state.latest_feedback
-            )
-
-            # Execute research step
-            notes = agent.run_step(temp_task)
+            # Execute research step using orchestrator
+            # The orchestrator handles research internally with subtask-specific agents
+            try:
+                import asyncio
+                research_result = asyncio.run(orch.next_action(task))
+                state.latest_feedback = research_result
+            except Exception as e:
+                print(f"Error executing orchestrator step: {e}")
+                research_result = f"Processing research step - {str(e)[:100]}"
+                state.latest_feedback = research_result
+            
+            # Get the latest notes from the orchestrator's current subtask
+            current_subtask = orch.get_current_subtask(task.name)
+            if current_subtask:
+                state.latest_subtask = current_subtask
+            
+            # The research_result contains the actual research output with [SEARCH], [THOUGHT], etc.
+            notes = research_result
 
             if notes and len(notes) > 10:
                 state.latest_notes = notes
@@ -696,48 +721,100 @@ def orchestration_loop():
                 # Store report in history
                 state.add_report(task.name, notes)
 
-                # Get REAL metrics from agent
-                if hasattr(agent, "get_global_metrics"):
-                    metrics = agent.get_global_metrics()
-                    state.total_llm_calls = metrics.get("total_llm_calls", 0)
-                    state.total_searches = metrics.get("total_searches", 0)
-                    state.total_summaries = metrics.get("total_summaries", 0)
-                    state.total_checkpoints = metrics.get("total_checkpoints", 0)
-                    state.total_web_fetches = metrics.get("total_web_fetches", 0)
+                # Get REAL metrics from orchestrator's subtask agents
+                progress_info = orch.get_task_progress(task.name)
+                
+                # Aggregate metrics from all subtask agents
+                total_searches = 0
+                total_thinks = 0
+                total_summaries = 0
+                total_checkpoints = 0
+                total_actions = 0
+                search_queries = []
+                
+                for subtask_info in progress_info.get("subtasks", []):
+                    if "agent_metrics" in subtask_info:
+                        metrics = subtask_info["agent_metrics"]
+                        total_searches += metrics.get("total_searches", 0)
+                        total_thinks += metrics.get("total_thoughts", 0)
+                        total_summaries += metrics.get("total_summaries", 0)
+                        total_checkpoints += metrics.get("total_checkpoints", 0)
+                        total_actions += metrics.get("total_llm_calls", 0)
+                        search_queries.extend(metrics.get("searches", []))
+                
+                # Update global metrics
+                state.total_llm_calls = total_actions
+                state.total_searches = total_searches
+                state.total_summaries = total_summaries
+                state.total_checkpoints = total_checkpoints
+                state.total_web_fetches = progress_info.get("web_fetches", 0)
 
-                # Get task-specific metrics
-                if hasattr(agent, "get_task_metrics"):
-                    task_metrics = agent.get_task_metrics(task.name)
-                    task_info = state.task_history[task.name]
+                # Update task-specific metrics
+                task_info = state.task_history[task.name]
+                task_info["searches"] = search_queries
+                task_info["search_count"] = total_searches
+                task_info["think_count"] = total_thinks
+                task_info["summary_count"] = total_summaries
+                task_info["checkpoint_count"] = total_checkpoints
+                task_info["action_count"] = total_actions
 
-                    # Update with REAL data from agent
-                    task_info["searches"] = task_metrics.get("searches", [])
-                    task_info["search_count"] = task_metrics.get("search_count", 0)
-                    task_info["think_count"] = task_metrics.get("think_count", 0)
-                    task_info["summary_count"] = task_metrics.get("summary_count", 0)
-                    task_info["checkpoint_count"] = task_metrics.get("checkpoint_count", 0)
-                    task_info["action_count"] = task_metrics.get("action_count", 0)
+                # Update search history with real search data
+                for search_query in search_queries:
+                    if not any(
+                        s.get("query") == search_query
+                        for s in state.search_history
+                    ):
+                        state.search_history.append(
+                            {
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "task": task.name,
+                                "query": search_query,
+                                "results_count": 4,
+                            }
+                        )
 
-                    # Update search history with real search data
-                    for search_query in task_metrics.get("searches", []):
-                        if not any(
-                            s.get("query") == search_query
-                            for s in state.search_history
-                        ):
-                            state.search_history.append(
-                                {
-                                    "time": datetime.now().strftime("%H:%M:%S"),
-                                    "task": task.name,
-                                    "query": search_query,
-                                    "results_count": SEARCH_RESULTS,
-                                }
-                            )
+                # Check for meaningful activity by examining the orchestrator's current subtask agent
+                has_meaningful_activity = False
+                activity_type = "analysis"
+                message = f"⚙️ Working on: {current_subtask}"
+                
+                if hasattr(orch, 'task_states') and task.name in orch.task_states:
+                    task_state = orch.task_states[task.name]
+                    if task_state.subtask_index in task_state.subtask_agents:
+                        current_agent = task_state.subtask_agents[task_state.subtask_index]
+                        if task.name in current_agent._state:
+                            agent_state = current_agent._state[task.name]
+                            
+                            # Check if there's new activity since last check
+                            last_action_count = task_info.get("last_agent_action_count", 0)
+                            if agent_state.action_count > last_action_count:
+                                has_meaningful_activity = True
+                                
+                                # Determine activity type based on recent actions
+                                if agent_state.search_count > task_info.get("last_search_count", 0):
+                                    activity_type = "search"
+                                    message = f"🔍 Searching: {current_subtask}"
+                                elif agent_state.think_count > task_info.get("last_think_count", 0):
+                                    activity_type = "thinking"
+                                    message = f"🤔 Analyzing: {current_subtask}"
+                                elif agent_state.summary_count > task_info.get("last_summary_count", 0):
+                                    activity_type = "summary"
+                                    message = f"📝 Summarizing findings"
+                                elif agent_state.checkpoint_count > task_info.get("last_checkpoint_count", 0):
+                                    activity_type = "checkpoint"
+                                    message = f"💾 Saving progress"
+                                
+                                # Update tracking
+                                task_info["last_agent_action_count"] = agent_state.action_count
+                                task_info["last_search_count"] = agent_state.search_count
+                                task_info["last_think_count"] = agent_state.think_count
+                                task_info["last_summary_count"] = agent_state.summary_count
+                                task_info["last_checkpoint_count"] = agent_state.checkpoint_count
 
-                # Update common fields
+                # Update common fields (always update progress)
                 elapsed = time.time() - state.task_start
                 progress = min(100, (elapsed / (task.budgetMinutes * 60)) * 100)
 
-                task_info = state.task_history[task.name]
                 task_info.update(
                     {
                         "elapsed": elapsed,
@@ -747,41 +824,35 @@ def orchestration_loop():
                     }
                 )
 
-                # Save notes
-                safe_name = "".join(
-                    c if c.isalnum() or c in (" ", "-", "_") else "_" for c in task.name
-                ).strip()
-                with open(f"notes/{safe_name.upper()}.txt", "w", encoding="utf-8") as fh:
-                    fh.write(notes)
+                # Only send activity if there's actual meaningful activity
+                if has_meaningful_activity:
+                    task_info["action_count"] += 1
+                    
+                    # Log activity with meaningful activity
+                    state.activity_log.append(
+                        {
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": activity_type,
+                            "message": message,
+                        }
+                    )
 
-                # Log activity with emojis
-                if "[SEARCH]" in notes:
-                    message = "🔍 Searching for information"
-                elif "[THOUGHT]" in notes or "[THINKING]" in notes:
-                    message = "🤔 Analyzing findings"
-                elif "[SUMMARY]" in notes:
-                    message = "📝 Creating summary"
-                elif "[CHECKPOINT" in notes:
-                    message = "💾 Saving checkpoint"
-                else:
-                    message = "⚙️ Processing"
+                    # Only save notes and generate reports for meaningful research findings
+                    if activity_type in ["summary", "checkpoint"] or (notes and len(notes) > 200):
+                        # Save notes
+                        safe_name = "".join(
+                            c if c.isalnum() or c in (" ", "-", "_") else "_" for c in task.name
+                        ).strip()
+                        with open(f"notes/{safe_name.upper()}.txt", "w", encoding="utf-8") as fh:
+                            fh.write(notes)
 
-                state.activity_log.append(
-                    {
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "type": "action",
-                        "message": message,
-                    }
-                )
-
-                state.last_update = time.time()
-
-                # Let orchestrator decide next
-                feedback = orch.next_action(task, notes)
-                state.latest_feedback = feedback
+                    state.last_update = time.time()
                 
-                # Check if task is complete based on progress
-                if progress >= 100.0:
+                # Check if task is complete based on orchestrator state or time budget
+                orchestrator_progress = progress_info.get("progress", 0)
+                if (task.status == TaskStatus.COMPLETE or 
+                    progress >= 100.0 or 
+                    orchestrator_progress >= 100.0):
                     task.status = TaskStatus.COMPLETE
                     state.task_history[task.name]["status"] = "complete"
                     state.task_history[task.name]["end_time"] = time.time()
@@ -799,9 +870,12 @@ def orchestration_loop():
                     # Plan for next task if available
                     if orch.current is not None and orch.current in orch.tasks:
                         next_task = orch.tasks[orch.current]
-                        orch._planning_phase(next_task)
-                        if orch.research_plan and orch.research_plan.subtasks:
-                            state.latest_subtask = orch.research_plan.subtasks[0].description
+                        import asyncio
+                        asyncio.run(orch._planning_phase(next_task))
+                        if hasattr(orch, 'task_states') and orch.current in orch.task_states:
+                            task_state = orch.task_states[orch.current]
+                            if task_state.research_plan and task_state.research_plan.subtasks:
+                                state.latest_subtask = task_state.research_plan.subtasks[0].description
 
             time.sleep(0.5)
 

@@ -1,4 +1,3 @@
-# .github/workflows/build-and-publish.yml
 name: build & publish (bake)
 
 on:
@@ -8,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  packages: write   # needed to push to GHCR
+  packages: write
 
 jobs:
   build:
@@ -25,17 +24,14 @@ jobs:
         with:
           install: true
 
-      # Login only when pushing to GHCR (main)
       - name: Free disk space
         run: |
           echo "Disk usage before cleanup:"
           df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache
           echo "Disk usage after cleanup:"
           df -h
+
       - name: Login to GHCR
         if: env.IS_MAIN == 'true'
         uses: docker/login-action@v3
@@ -44,34 +40,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---------- PRs: build & artifact (.tar) ----------
-      - name: Bake (build into local Docker)
-        if: env.IS_MAIN != 'true'
-        uses: docker/bake-action@v5
-        with:
-          files: docker-compose.yml
-          set: |
-            *.output=type=docker
-
-      - name: Export images as .tar
+      # ---------- PRs: export as tar artifacts ----------
+      - name: Build and export images (PR)
         if: env.IS_MAIN != 'true'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p image-artifacts
+
+          # Enumerate bake targets
           targets=$(docker buildx bake --print -f docker-compose.yml | jq -r '.target | keys[]')
+
           for t in $targets; do
-            # Expect images tagged like ghcr.io/dankeg/kestrelai-<service>:commit-<sha>
-            tag="ghcr.io/dankeg/kestrelai-${t}:commit-${COMMIT_SHA}"
-            # Fallback to service:latest if not found
-            if ! docker image inspect "$tag" >/dev/null 2>&1; then
-              tag="${t}:latest"
-            fi
+            echo "==> Building and exporting $t"
             out="image-artifacts/${t}.tar"
-            echo "Saving $tag -> $out"
-            docker save -o "$out" "$tag"
+            docker buildx bake -f docker-compose.yml "$t" \
+              --set "$t.output=type=oci,dest=${out}" \
+              --set "$t.tags=ghcr.io/dankeg/kestrelai-${t}:commit-${COMMIT_SHA}" \
+              --set "$t.no-cache=true"
+
+            echo "==> Built $t ($(du -h ${out}))"
+            docker buildx prune -af --keep-storage 512000 || true
           done
-          ls -lh image-artifacts
+
+          echo "Final disk usage:"
+          df -h
 
       - name: Upload artifacts
         if: env.IS_MAIN != 'true'
@@ -80,24 +73,14 @@ jobs:
           name: docker-images-${{ github.run_id }}
           path: image-artifacts/
           compression-level: 9
-      
-      - name: Cleanup Docker
-        if: env.IS_MAIN != 'true'
-        run: |
-          echo "Disk usage before prune:"
-          docker system df
-          docker system prune -af --volumes
-          echo "Disk usage after prune:"
-          docker system df
 
-      # ---------- main: push to GHCR ----------
-      - name: Bake & push images sequentially
+      # ---------- main: push to GHCR sequentially ----------
+      - name: Build & push images sequentially (main)
         if: env.IS_MAIN == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          # Discover all bake targets
           targets=$(docker buildx bake --print -f docker-compose.yml | jq -r '.target | keys[]')
 
           for t in $targets; do
@@ -107,8 +90,9 @@ jobs:
               --set "$t.no-cache=true"
 
             echo "==> Cleaning up $t to free disk"
-            docker image rm "ghcr.io/dankeg/kestrelai-${t}:commit-${COMMIT_SHA}" || true
-            docker image rm "${t}:latest" || true
-            docker system prune -af --volumes || true
+            docker buildx prune -af --volumes || true
             echo "==> Done with $t"
           done
+
+          echo "Final disk usage:"
+          df -h

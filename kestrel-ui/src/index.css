@@ -5,3 +5,175 @@
 /* Optional: smooth fonts + nicer scrolling */
 html, body, #root { height: 100%; }
 body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+/* Theme System - CSS Custom Properties */
+:root {
+  /* Amber Theme (Default) */
+  --theme-primary-50: #fffbeb;
+  --theme-primary-100: #fef3c7;
+  --theme-primary-200: #fde68a;
+  --theme-primary-300: #fcd34d;
+  --theme-primary-400: #fbbf24;
+  --theme-primary-500: #f59e0b;
+  --theme-primary-600: #d97706;
+  --theme-primary-700: #b45309;
+  --theme-primary-800: #92400e;
+  --theme-primary-900: #78350f;
+  
+  --theme-secondary-50: #fff7ed;
+  --theme-secondary-100: #ffedd5;
+  --theme-secondary-200: #fed7aa;
+  --theme-secondary-300: #fdba74;
+  --theme-secondary-400: #fb923c;
+  --theme-secondary-500: #f97316;
+  --theme-secondary-600: #ea580c;
+  --theme-secondary-700: #c2410c;
+  --theme-secondary-800: #9a3412;
+  --theme-secondary-900: #7c2d12;
+  
+  --theme-gradient-from: #fbbf24;
+  --theme-gradient-to: #fb923c;
+  --theme-gradient-bg: linear-gradient(to bottom right, #fffbeb, #fff7ed, #fffbeb);
+  --theme-sidebar-gradient: linear-gradient(to bottom, #92400e, #b45309, #c2410c);
+  --theme-backdrop: rgba(251, 191, 36, 0.1);
+  
+  /* Opacity variants */
+  --theme-primary-700-50: rgba(180, 83, 9, 0.5);
+  --theme-primary-700-70: rgba(180, 83, 9, 0.7);
+  --theme-primary-700-20: rgba(180, 83, 9, 0.2);
+  --theme-primary-600-30: rgba(217, 119, 6, 0.3);
+  --theme-primary-500-30: rgba(245, 158, 11, 0.3);
+  --theme-primary-800-30: rgba(146, 64, 14, 0.3);
+  --theme-primary-700-30: rgba(180, 83, 9, 0.3);
+  --theme-primary-300-70: rgba(252, 211, 77, 0.7);
+  --theme-primary-50-50: rgba(255, 251, 235, 0.5);
+  --theme-primary-100-80: rgba(254, 243, 199, 0.8);
+  --theme-primary-200-70: rgba(253, 230, 138, 0.7);
+  --theme-primary-300-80: rgba(252, 211, 77, 0.8);
+  --theme-secondary-50-50: rgba(255, 247, 237, 0.5);
+  --theme-secondary-50-80: rgba(255, 247, 237, 0.8);
+  --theme-primary-200-80: rgba(253, 230, 138, 0.8);
+}
+
+[data-theme="blue"] {
+  /* Blue Theme */
+  --theme-primary-50: #eff6ff;
+  --theme-primary-100: #dbeafe;
+  --theme-primary-200: #bfdbfe;
+  --theme-primary-300: #93c5fd;
+  --theme-primary-400: #60a5fa;
+  --theme-primary-500: #3b82f6;
+  --theme-primary-600: #2563eb;
+  --theme-primary-700: #1d4ed8;
+  --theme-primary-800: #1e40af;
+  --theme-primary-900: #1e3a8a;
+  
+  --theme-secondary-50: #f0f9ff;
+  --theme-secondary-100: #e0f2fe;
+  --theme-secondary-200: #bae6fd;
+  --theme-secondary-300: #7dd3fc;
+  --theme-secondary-400: #38bdf8;
+  --theme-secondary-500: #0ea5e9;
+  --theme-secondary-600: #0284c7;
+  --theme-secondary-700: #0369a1;
+  --theme-secondary-800: #075985;
+  --theme-secondary-900: #0c4a6e;
+  
+  --theme-gradient-from: #3b82f6;
+  --theme-gradient-to: #0ea5e9;
+  --theme-gradient-bg: linear-gradient(to bottom right, #eff6ff, #f0f9ff, #eff6ff);
+  --theme-sidebar-gradient: linear-gradient(to bottom, #1e40af, #1d4ed8, #0369a1);
+  --theme-backdrop: rgba(59, 130, 246, 0.1);
+  
+  /* Opacity variants */
+  --theme-primary-700-50: rgba(29, 78, 216, 0.5);
+  --theme-primary-700-70: rgba(29, 78, 216, 0.7);
+  --theme-primary-700-20: rgba(29, 78, 216, 0.2);
+  --theme-primary-600-30: rgba(37, 99, 235, 0.3);
+  --theme-primary-500-30: rgba(59, 130, 246, 0.3);
+  --theme-primary-800-30: rgba(30, 64, 175, 0.3);
+  --theme-primary-700-30: rgba(29, 78, 216, 0.3);
+  --theme-primary-300-70: rgba(147, 197, 253, 0.7);
+  --theme-primary-50-50: rgba(239, 246, 255, 0.5);
+  --theme-primary-100-80: rgba(219, 234, 254, 0.8);
+  --theme-primary-200-70: rgba(191, 219, 254, 0.7);
+  --theme-primary-300-80: rgba(147, 197, 253, 0.8);
+  --theme-secondary-50-50: rgba(240, 249, 255, 0.5);
+  --theme-secondary-50-80: rgba(240, 249, 255, 0.8);
+  --theme-primary-200-80: rgba(191, 219, 254, 0.8);
+}
+
+/* Theme-aware utility classes */
+.theme-bg-primary-50 { background-color: var(--theme-primary-50); }
+.theme-bg-primary-100 { background-color: var(--theme-primary-100); }
+.theme-bg-primary-200 { background-color: var(--theme-primary-200); }
+.theme-bg-primary-300 { background-color: var(--theme-primary-300); }
+.theme-bg-primary-400 { background-color: var(--theme-primary-400); }
+.theme-bg-primary-500 { background-color: var(--theme-primary-500); }
+.theme-bg-primary-600 { background-color: var(--theme-primary-600); }
+.theme-bg-primary-700 { background-color: var(--theme-primary-700); }
+.theme-bg-primary-800 { background-color: var(--theme-primary-800); }
+.theme-bg-primary-900 { background-color: var(--theme-primary-900); }
+
+.theme-text-primary-50 { color: var(--theme-primary-50); }
+.theme-text-primary-100 { color: var(--theme-primary-100); }
+.theme-text-primary-200 { color: var(--theme-primary-200); }
+.theme-text-primary-300 { color: var(--theme-primary-300); }
+.theme-text-primary-400 { color: var(--theme-primary-400); }
+.theme-text-primary-500 { color: var(--theme-primary-500); }
+.theme-text-primary-600 { color: var(--theme-primary-600); }
+.theme-text-primary-700 { color: var(--theme-primary-700); }
+.theme-text-primary-800 { color: var(--theme-primary-800); }
+.theme-text-primary-900 { color: var(--theme-primary-900); }
+
+.theme-border-primary-200 { border-color: var(--theme-primary-200); }
+.theme-border-primary-300 { border-color: var(--theme-primary-300); }
+.theme-border-primary-400 { border-color: var(--theme-primary-400); }
+.theme-border-primary-500 { border-color: var(--theme-primary-500); }
+.theme-border-primary-600 { border-color: var(--theme-primary-600); }
+.theme-border-primary-700 { border-color: var(--theme-primary-700); }
+
+.theme-bg-secondary-50 { background-color: var(--theme-secondary-50); }
+.theme-bg-secondary-100 { background-color: var(--theme-secondary-100); }
+.theme-bg-secondary-200 { background-color: var(--theme-secondary-200); }
+.theme-bg-secondary-300 { background-color: var(--theme-secondary-300); }
+.theme-bg-secondary-400 { background-color: var(--theme-secondary-400); }
+.theme-bg-secondary-500 { background-color: var(--theme-secondary-500); }
+.theme-bg-secondary-600 { background-color: var(--theme-secondary-600); }
+.theme-bg-secondary-700 { background-color: var(--theme-secondary-700); }
+.theme-bg-secondary-800 { background-color: var(--theme-secondary-800); }
+.theme-bg-secondary-900 { background-color: var(--theme-secondary-900); }
+
+.theme-text-secondary-50 { color: var(--theme-secondary-50); }
+.theme-text-secondary-100 { color: var(--theme-secondary-100); }
+.theme-text-secondary-200 { color: var(--theme-secondary-200); }
+.theme-text-secondary-300 { color: var(--theme-secondary-300); }
+.theme-text-secondary-400 { color: var(--theme-secondary-400); }
+.theme-text-secondary-500 { color: var(--theme-secondary-500); }
+.theme-text-secondary-600 { color: var(--theme-secondary-600); }
+.theme-text-secondary-700 { color: var(--theme-secondary-700); }
+.theme-text-secondary-800 { color: var(--theme-secondary-800); }
+.theme-text-secondary-900 { color: var(--theme-secondary-900); }
+
+.theme-gradient-bg { background: var(--theme-gradient-bg); }
+.theme-sidebar-gradient { background: var(--theme-sidebar-gradient); }
+.theme-gradient-from { background-color: var(--theme-gradient-from); }
+.theme-gradient-to { background-color: var(--theme-gradient-to); }
+
+/* Specific theme-aware classes with opacity */
+.theme-bg-primary-700-50 { background-color: var(--theme-primary-700-50); }
+.theme-bg-primary-700-70 { background-color: var(--theme-primary-700-70); }
+.theme-bg-primary-700-20 { background-color: var(--theme-primary-700-20); }
+.theme-bg-primary-800-30 { background-color: var(--theme-primary-800-30); }
+.theme-bg-primary-600-30 { background-color: var(--theme-primary-600-30); }
+.theme-border-primary-600-30 { border-color: var(--theme-primary-600-30); }
+.theme-border-primary-500-30 { border-color: var(--theme-primary-500-30); }
+.theme-border-primary-700-30 { border-color: var(--theme-primary-700-30); }
+.theme-text-primary-300-70 { color: var(--theme-primary-300-70); }
+.theme-bg-primary-50-50 { background-color: var(--theme-primary-50-50); }
+.theme-bg-primary-100-80 { background-color: var(--theme-primary-100-80); }
+.theme-text-primary-200-70 { color: var(--theme-primary-200-70); }
+.theme-text-primary-300-80 { color: var(--theme-primary-300-80); }
+.theme-bg-secondary-50-50 { background-color: var(--theme-secondary-50-50); }
+.theme-bg-secondary-50-80 { background-color: var(--theme-secondary-50-80); }
+.theme-text-primary-200-80 { color: var(--theme-primary-200-80); }

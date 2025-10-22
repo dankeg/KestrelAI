@@ -1,5 +1,9 @@
 from chromadb import PersistentClient
 from sentence_transformers import SentenceTransformer
+import os
+
+# Disable ChromaDB telemetry to avoid errors
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 
 class MemoryStore:

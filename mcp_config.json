@@ -1,0 +1,57 @@
+{
+  "servers": {
+    "filesystem": {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {},
+      "enabled": true,
+      "description": "File system access for reading/writing files",
+      "tools": ["read_file", "write_file", "list_directory", "search_files"]
+    },
+    "sqlite": {
+      "name": "sqlite",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sqlite", "--db-path", "/tmp/kestrel.db"],
+      "env": {},
+      "enabled": true,
+      "description": "SQLite database access for structured data queries",
+      "tools": ["query_database", "create_table", "insert_data", "update_data"]
+    },
+    "github": {
+      "name": "github",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {},
+      "enabled": true,
+      "description": "GitHub API access for repository information",
+      "tools": ["search_repositories", "get_repository_info", "get_file_contents", "list_issues"]
+    },
+    "brave_search": {
+      "name": "brave_search",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {},
+      "enabled": true,
+      "description": "Brave Search API for enhanced web search",
+      "tools": ["search_web", "search_news", "search_images"]
+    },
+    "puppeteer": {
+      "name": "puppeteer",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+      "env": {},
+      "enabled": true,
+      "description": "Web scraping and browser automation",
+      "tools": ["navigate_to_page", "take_screenshot", "extract_text", "click_element"]
+    }
+  },
+  "timeout": 30,
+  "max_retries": 3,
+  "enable_logging": true,
+  "log_level": "INFO"
+}
+
+
+
+

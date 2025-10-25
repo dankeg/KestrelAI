@@ -29,7 +29,7 @@ class TestPerformanceRegression:
         """Test LLM performance to prevent regression."""
         from KestrelAI.agents.base import LlmWrapper
         
-        llm = LlmWrapper(model="gemma3:12b", host="http://localhost:11434")
+        llm = LlmWrapper(model="gemma3:27b", host="http://localhost:11434")
         
         start_time = time.time()
         try:

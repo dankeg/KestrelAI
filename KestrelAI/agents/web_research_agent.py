@@ -34,7 +34,7 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8080/search")
 SEARCH_RESULTS = 4
 FETCH_BYTES = 30_000
 DEBUG = True
-CONTEXT_WINDOW = 20
+CONTEXT_WINDOW = 60
 CHECKPOINT_FREQ = 5
 MAX_SNIPPET_LENGTH = 3000
 
@@ -115,7 +115,7 @@ class WebResearchAgent(BaseResearchAgent):
         
         for loop_idx in range(self.config.think_loops):
             # Check for loops before proceeding
-            if state.is_in_loop():
+            if state.is_in_loop() and False:
                 if self.config.debug:
                     print(f"[{task.name}] Detected loop, forcing summarize action")
                 action = "summarize"

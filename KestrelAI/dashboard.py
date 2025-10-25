@@ -494,7 +494,7 @@ tasks = [
 # Initialize backend
 # -----------------------------------------------------------------------------
 mem = MemoryStore()
-llm = LlmWrapper(model="gemma3:12b")
+llm = LlmWrapper(model="gemma3:27b")
 # Note: We don't need a separate research agent - the orchestrator handles research internally
 orch = ResearchOrchestrator(tasks, llm, profile="kestrel")
 

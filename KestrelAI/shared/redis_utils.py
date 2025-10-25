@@ -135,6 +135,7 @@ class SyncRedisClient:
             "content": content,
             "metadata": metadata or {},
             "timestamp": int(time.time() * 1000),
+            "format": "markdown"
         }
         self.redis.lpush(RedisQueues.TASK_REPORTS, json.dumps(report))
 

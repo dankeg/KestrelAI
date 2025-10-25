@@ -101,7 +101,7 @@ def test_config():
         "redis_host": "localhost",
         "redis_port": 6379,
         "searxng_url": "http://localhost:8080",
-        "model_name": "gemma3:12b"
+        "model_name": "gemma3:27b"
     }
 
 # Performance test thresholds

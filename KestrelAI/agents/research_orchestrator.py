@@ -26,6 +26,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Context management constants
+MAX_CONTEXT_CHARS = 80_000  # Maximum characters for recent notes in review
+MAX_FEEDBACK_HISTORY = 20  # Maximum feedback entries to keep for loop detection
+
 
 class OrchestratorDecision(BaseModel):
     reasoning: str
@@ -79,9 +83,9 @@ class TaskState:
         self.last_decision = decision
         self.feedback_history.append(feedback)
         
-        # Keep only last 5 feedback entries for loop detection
-        if len(self.feedback_history) > 5:
-            self.feedback_history = self.feedback_history[-5:]
+        # Keep only last MAX_FEEDBACK_HISTORY feedback entries for loop detection
+        if len(self.feedback_history) > MAX_FEEDBACK_HISTORY:
+            self.feedback_history = self.feedback_history[-MAX_FEEDBACK_HISTORY:]
         
         # Check for repeated decisions
         if len(self.feedback_history) >= 3:
@@ -264,7 +268,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                     f"Decision count: {task_state.decision_count}",
                     f"Stuck count: {task_state.stuck_count}",
                     current_subtask_info,
-                    f"Recent notes: {latest_notes[:1000]}...",  # Limit context size
+                    f"Recent notes: {latest_notes[:MAX_CONTEXT_CHARS]}...",  # Limit context size
                     f"Previous feedback: {task_state.feedback_history[-1] if task_state.feedback_history else 'None'}"
                 ]
 

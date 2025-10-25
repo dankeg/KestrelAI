@@ -4,7 +4,7 @@ import ollama
 
 class LlmWrapper:
     def __init__(
-        self, model: str = "gemma3:12b", temperature: float = 0.6, host: str = None
+        self, model: str = "gemma3:27b", temperature: float = 0.6, host: str = None
     ):
         self.model = model
         self.temperature = temperature

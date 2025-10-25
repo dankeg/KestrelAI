@@ -63,7 +63,7 @@ class KestrelAgentWorker:
         # Use environment variable for Ollama host, default to localhost for local development
         # CRITICAL: On macOS, use local Ollama for performance, not Docker Ollama
         ollama_host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.llm = LlmWrapper(model="gemma3:12b", host=ollama_host)
+        self.llm = LlmWrapper(model="gemma3:27b", host=ollama_host)
         self.agent = WebResearchAgent("main-agent", self.llm, self.mem)
 
         # State management
@@ -321,7 +321,7 @@ class KestrelAgentWorker:
                 # Use local Ollama endpoint (faster on macOS)
                 ollama_host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             
-            self.llm = LlmWrapper(model="gemma3:12b", host=ollama_host)
+            self.llm = LlmWrapper(model="gemma3:27b", host=ollama_host)
             
             # Update the agent with new LLM
             self.agent = WebResearchAgent("main-agent", self.llm, self.mem)

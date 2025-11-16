@@ -1,13 +1,14 @@
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
-from typing import List, Dict, Any
 from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from shared.models import Task, TaskStatus
-from shared.redis_utils import get_async_redis_client, RedisConfig
+from shared.redis_utils import get_async_redis_client
 
 router = APIRouter()
 
 
-@router.get("/tasks", response_model=List[Task])
+@router.get("/tasks", response_model=list[Task])
 async def get_tasks():
     """Get all tasks"""
     # Example logic to fetch tasks from Redis
@@ -25,7 +26,7 @@ async def get_task(task_id: str):
 
 
 @router.post("/tasks", response_model=Task)
-async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTasks):
+async def create_task(task_data: dict[str, Any], background_tasks: BackgroundTasks):
     """Create a new task"""
     task = Task(
         id=task_data.get("id", ""),
@@ -41,7 +42,7 @@ async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTas
 
 
 @router.patch("/tasks/{task_id}", response_model=Task)
-async def update_task(task_id: str, updates: Dict[str, Any]):
+async def update_task(task_id: str, updates: dict[str, Any]):
     """Update an existing task"""
     client = get_async_redis_client()
     task_data = await client.get_task_from_redis(task_id)

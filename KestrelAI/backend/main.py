@@ -3,33 +3,44 @@ KestrelAI FastAPI Backend with Redis Queue Integration
 Autonomous Research Agent API
 """
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import random
+import uuid
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Optional
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
-import uuid
-import json
-import random
-from enum import Enum
-import asyncio
-import logging
-import os
 
 # Import shared models and utilities
 try:
-    from KestrelAI.shared.models import Task, TaskStatus, TaskMetrics, ResearchPlan
+    from KestrelAI.shared.models import ResearchPlan, Task, TaskMetrics, TaskStatus
     from KestrelAI.shared.redis_utils import (
-        RedisConfig, RedisQueues, RedisKeys,
-        get_async_redis_client, init_async_redis, close_async_redis
+        RedisConfig,
+        RedisKeys,
+        RedisQueues,
+        close_async_redis,
+        get_async_redis_client,
+        init_async_redis,
     )
 except ImportError:
     # Fallback for different import contexts (Docker, local, etc.)
-    from shared.models import Task, TaskStatus, TaskMetrics, ResearchPlan
+    from shared.models import ResearchPlan, Task, TaskMetrics, TaskStatus
     from shared.redis_utils import (
-        RedisConfig, RedisQueues, RedisKeys,
-        get_async_redis_client, init_async_redis, close_async_redis
+        RedisConfig,
+        RedisKeys,
+        RedisQueues,
+        close_async_redis,
+        get_async_redis_client,
+        init_async_redis,
     )
 
 # Configure logging
@@ -128,7 +139,7 @@ class TaskCommand(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
     taskId: str
     type: CommandType
-    payload: Dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: int = Field(
         default_factory=lambda: int(datetime.now().timestamp() * 1000)
     )
@@ -138,11 +149,11 @@ class TaskUpdate(BaseModel):
     """Update received from the agent via Redis"""
 
     taskId: str
-    status: Optional[TaskStatus] = None
-    progress: Optional[float] = None
-    elapsed: Optional[int] = None
-    metrics: Optional[Dict[str, int]] = None
-    error: Optional[str] = None
+    status: TaskStatus | None = None
+    progress: float | None = None
+    elapsed: int | None = None
+    metrics: dict[str, int] | None = None
+    error: str | None = None
     timestamp: int = Field(
         default_factory=lambda: int(datetime.now().timestamp() * 1000)
     )
@@ -154,7 +165,7 @@ class ActivityEntry(BaseModel):
     time: str
     type: ActivityType
     message: str
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: int = Field(
         default_factory=lambda: int(datetime.now().timestamp() * 1000)
     )
@@ -166,7 +177,7 @@ class SearchEntry(BaseModel):
     time: str
     query: str
     results: int
-    sources: List[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
     timestamp: int = Field(
         default_factory=lambda: int(datetime.now().timestamp() * 1000)
     )
@@ -181,7 +192,7 @@ class Report(BaseModel):
     title: str
     content: str
     format: str = "markdown"
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SystemMetrics(BaseModel):
@@ -217,9 +228,10 @@ class AppSettings(BaseModel):
     orchestrator: Orchestrator = Field(
         default=Orchestrator.kestrel, description="Research orchestrator profile"
     )
-    theme: Theme = Field(
-        default=Theme.amber, description="UI theme color scheme"
-    )
+    theme: Theme = Field(default=Theme.amber, description="UI theme color scheme")
+
+
+# Helper Functions - Research plan uses snake_case in both frontend and backend
 
 
 # Redis Helper Functions - now using unified Redis utilities
@@ -246,14 +258,14 @@ async def close_redis():
 
 # Task Queue Operations - now using unified Redis utilities
 async def send_command(
-    task_id: str, command_type: CommandType, payload: Dict[str, Any] = None
+    task_id: str, command_type: CommandType, payload: dict[str, Any] = None
 ):
     """Send command to agent via Redis queue"""
     client = get_async_redis_client(REDIS_CONFIG)
     return await client.send_command(task_id, command_type.value, payload or {})
 
 
-async def get_task_from_redis(task_id: str) -> Optional[Task]:
+async def get_task_from_redis(task_id: str) -> Task | None:
     """Get task state from Redis"""
     try:
         client = get_async_redis_client(REDIS_CONFIG)
@@ -281,7 +293,7 @@ async def process_queues():
     while True:
         try:
             r = await get_redis()
-            
+
             # Process task updates
             raw = await r.rpop(RedisQueues.TASK_UPDATES)
             if raw:
@@ -297,39 +309,108 @@ async def process_queues():
                         if "elapsed" in update_data:
                             task.elapsed = update_data["elapsed"]
                         if "metrics" in update_data:
-                            for k, v in update_data["metrics"].items():
+                            # Update task.metrics (TaskMetrics structure)
+                            metrics_dict = update_data["metrics"]
+                            for k, v in metrics_dict.items():
                                 if hasattr(task.metrics, k):
                                     setattr(task.metrics, k, v)
+
+                            # Also convert to SystemMetrics format and publish separately
+                            # Map TaskMetrics fields to SystemMetrics fields
+                            system_metrics = {
+                                "taskId": update_data["taskId"],
+                                "llmCalls": metrics_dict.get("llmTokensUsed", 0)
+                                // 1000,  # Approximate
+                                "searches": metrics_dict.get("searchCount", 0),
+                                "pagesAnalyzed": 0,  # Not tracked in TaskMetrics
+                                "summaries": metrics_dict.get("summaryCount", 0),
+                                "checkpoints": metrics_dict.get("checkpointCount", 0),
+                                "tokensUsed": metrics_dict.get("llmTokensUsed", 0),
+                                "estimatedCost": 0.0,  # Not calculated yet
+                                "timestamp": update_data.get(
+                                    "timestamp", int(datetime.now().timestamp() * 1000)
+                                ),
+                            }
+                            # Publish as separate metrics event
+                            await r.publish(
+                                f"kestrel:task:{update_data['taskId']}:updates",
+                                json.dumps(
+                                    {"type": "metrics", "payload": system_metrics}
+                                ),
+                            )
+
+                            # Also store in TASK_METRICS key for /metrics endpoint
+                            metrics_key = RedisKeys.TASK_METRICS.format(
+                                task_id=update_data["taskId"]
+                            )
+                            await r.set(metrics_key, json.dumps(system_metrics))
+
                         if "research_plan" in update_data:
                             # Convert dict to ResearchPlan object
                             try:
-                                task.research_plan = ResearchPlan(**update_data["research_plan"])
-                                logger.info(f"Successfully converted research plan for task {update_data['taskId']}")
+                                # Ensure snake_case keys are converted for Pydantic
+                                plan_data = update_data["research_plan"]
+                                # If it's already a dict with snake_case, Pydantic will handle it
+                                task.research_plan = ResearchPlan(**plan_data)
+                                logger.info(
+                                    f"Successfully converted research plan for task {update_data['taskId']}"
+                                )
                             except Exception as e:
-                                logger.error(f"Failed to convert research plan for task {update_data['taskId']}: {e}")
-                                logger.error(f"Research plan data: {update_data['research_plan']}")
+                                logger.error(
+                                    f"Failed to convert research plan for task {update_data['taskId']}: {e}"
+                                )
+                                logger.error(
+                                    f"Research plan data: {update_data['research_plan']}"
+                                )
                                 # Store as dict if conversion fails
                                 task.research_plan = update_data["research_plan"]
                         task.updatedAt = int(datetime.now().timestamp() * 1000)
                         await save_task_to_redis(task)
-                        
-                        # Publish update event
+
+                        # Publish update event (status changes, progress, etc.)
                         await r.publish(
                             f"kestrel:task:{update_data['taskId']}:updates",
                             json.dumps({"type": "status", "payload": update_data}),
                         )
-                        
+
                         # Also publish research plan update if it was updated
                         if "research_plan" in update_data:
                             try:
+                                # Handle both ResearchPlan object and dict
+                                # Note: Frontend expects snake_case (restated_task, success_criteria, etc.)
+                                if hasattr(task.research_plan, "model_dump"):
+                                    # Pydantic v2 - get dict (preserves snake_case field names)
+                                    plan_payload = task.research_plan.model_dump()
+                                elif hasattr(task.research_plan, "dict"):
+                                    # Pydantic v1 - get dict (preserves snake_case field names)
+                                    plan_payload = task.research_plan.dict()
+                                elif isinstance(task.research_plan, dict):
+                                    # Already a dict - use as-is (should already be snake_case)
+                                    plan_payload = task.research_plan
+                                else:
+                                    # Use the update_data directly (already snake_case from model loop)
+                                    plan_payload = update_data["research_plan"]
+
                                 await r.publish(
                                     f"kestrel:task:{update_data['taskId']}:updates",
-                                    json.dumps({"type": "research_plan", "payload": task.research_plan.dict()}),
+                                    json.dumps(
+                                        {
+                                            "type": "research_plan",
+                                            "payload": plan_payload,
+                                        }
+                                    ),
                                 )
-                                logger.info(f"Published research plan update for task {update_data['taskId']}")
+                                logger.info(
+                                    f"Published research plan update for task {update_data['taskId']}"
+                                )
                             except Exception as e:
-                                logger.error(f"Failed to publish research plan update for task {update_data['taskId']}: {e}")
-                        logger.info(f"Processed update for task {update_data['taskId']}")
+                                logger.error(
+                                    f"Failed to publish research plan update for task {update_data['taskId']}: {e}",
+                                    exc_info=True,
+                                )
+                        logger.info(
+                            f"Processed update for task {update_data['taskId']}"
+                        )
                 except Exception as e:
                     logger.error(f"Error processing task update: {e}")
 
@@ -340,8 +421,14 @@ async def process_queues():
                     activity_data = json.loads(raw)
                     task_id = activity_data.get("taskId")
                     if task_id:
+                        # Ensure activity has an ID (frontend expects it)
+                        if "id" not in activity_data:
+                            activity_data["id"] = str(uuid.uuid4())[:8]
+
+                        # Store the updated activity data
+                        updated_raw = json.dumps(activity_data)
                         key = RedisKeys.TASK_ACTIVITIES.format(task_id=task_id)
-                        await r.lpush(key, raw)
+                        await r.lpush(key, updated_raw)
                         # Publish activity event
                         await r.publish(
                             f"kestrel:task:{task_id}:updates",
@@ -358,14 +445,22 @@ async def process_queues():
                     search_data = json.loads(raw)
                     task_id = search_data.get("taskId")
                     if task_id:
+                        # Ensure search has an ID (frontend expects it)
+                        if "id" not in search_data:
+                            search_data["id"] = str(uuid.uuid4())[:8]
+
+                        # Store the updated search data
+                        updated_raw = json.dumps(search_data)
                         key = RedisKeys.TASK_SEARCHES.format(task_id=task_id)
-                        await r.lpush(key, raw)
+                        await r.lpush(key, updated_raw)
                         # Publish search event
                         await r.publish(
                             f"kestrel:task:{task_id}:updates",
                             json.dumps({"type": "search", "payload": search_data}),
                         )
-                        logger.info(f"Processed search for task {task_id}: {search_data.get('query', 'unknown')}")
+                        logger.info(
+                            f"Processed search for task {task_id}: {search_data.get('query', 'unknown')}"
+                        )
                 except Exception as e:
                     logger.error(f"Error processing search: {e}")
 
@@ -376,8 +471,14 @@ async def process_queues():
                     report_data = json.loads(raw)
                     task_id = report_data.get("taskId")
                     if task_id:
+                        # Ensure report has an ID (frontend expects it)
+                        if "id" not in report_data:
+                            report_data["id"] = str(uuid.uuid4())[:8]
+
+                        # Store the updated report data
+                        updated_raw = json.dumps(report_data)
                         key = RedisKeys.TASK_REPORTS.format(task_id=task_id)
-                        await r.lpush(key, raw)
+                        await r.lpush(key, updated_raw)
                         # Publish report event
                         await r.publish(
                             f"kestrel:task:{task_id}:updates",
@@ -414,10 +515,10 @@ async def process_queues():
 
 
 # In-memory fallback storage (for when Redis is not available)
-tasks_memory: Dict[str, Task] = {}
-activities_memory: Dict[str, List[ActivityEntry]] = {}
-searches_memory: Dict[str, List[SearchEntry]] = {}
-reports_memory: Dict[str, List[Report]] = {}
+tasks_memory: dict[str, Task] = {}
+activities_memory: dict[str, list[ActivityEntry]] = {}
+searches_memory: dict[str, list[SearchEntry]] = {}
+reports_memory: dict[str, list[Report]] = {}
 settings_memory: AppSettings = AppSettings()
 
 # API Endpoints
@@ -449,7 +550,7 @@ async def get_settings():
             return AppSettings(**json.loads(settings_data))
     except:
         pass
-    
+
     # Fallback to in-memory storage
     return settings_memory
 
@@ -458,17 +559,17 @@ async def get_settings():
 async def save_settings(settings: AppSettings):
     """Save application settings"""
     global settings_memory
-    
+
     try:
         r = await get_redis()
         await r.set("kestrel:settings", settings.json())
-        
+
         # Also store in memory as fallback
         settings_memory = settings
-        
+
         # Send settings update to all active agents
         await send_command(None, CommandType.UPDATE_SETTINGS, settings.dict())
-        
+
         logger.info(f"Settings updated: {settings.dict()}")
         return settings
     except Exception as e:
@@ -478,7 +579,7 @@ async def save_settings(settings: AppSettings):
         return settings
 
 
-@app.get("/api/v1/tasks", response_model=List[Task])
+@app.get("/api/v1/tasks", response_model=list[Task])
 async def get_tasks():
     """Get all tasks"""
     try:
@@ -513,7 +614,7 @@ async def get_task(task_id: str):
 
 
 @app.post("/api/v1/tasks", response_model=Task)
-async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTasks):
+async def create_task(task_data: dict[str, Any], background_tasks: BackgroundTasks):
     """Create a new task"""
     task = Task(
         name=task_data.get("name", "New Research Task"),
@@ -548,7 +649,7 @@ async def create_task(task_data: Dict[str, Any], background_tasks: BackgroundTas
 
 
 @app.patch("/api/v1/tasks/{task_id}", response_model=Task)
-async def update_task(task_id: str, updates: Dict[str, Any]):
+async def update_task(task_id: str, updates: dict[str, Any]):
     """Update an existing task"""
     try:
         task = await get_task_from_redis(task_id)
@@ -710,7 +811,7 @@ async def resume_task(task_id: str):
     return task
 
 
-@app.get("/api/v1/tasks/{task_id}/activity", response_model=List[ActivityEntry])
+@app.get("/api/v1/tasks/{task_id}/activity", response_model=list[ActivityEntry])
 async def get_task_activity(
     task_id: str,
     limit: int = Query(
@@ -749,7 +850,7 @@ async def get_task_activity(
         return mock_activities[:limit]
 
 
-@app.get("/api/v1/tasks/{task_id}/searches", response_model=List[SearchEntry])
+@app.get("/api/v1/tasks/{task_id}/searches", response_model=list[SearchEntry])
 async def get_task_search_history(
     task_id: str,
     limit: int = Query(
@@ -794,7 +895,7 @@ async def get_task_search_history(
         return mock_searches[:limit]
 
 
-@app.get("/api/v1/tasks/{task_id}/reports", response_model=List[Report])
+@app.get("/api/v1/tasks/{task_id}/reports", response_model=list[Report])
 async def get_task_reports(task_id: str):
     """Get all reports for a task"""
     try:
@@ -861,8 +962,19 @@ async def get_task_research_plan(task_id: str):
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
 
     # Return research plan if available
-    if hasattr(task, 'research_plan') and task.research_plan:
-        return task.research_plan
+    # Note: Frontend expects snake_case (restated_task, success_criteria, etc.)
+    if hasattr(task, "research_plan") and task.research_plan:
+        if hasattr(task.research_plan, "model_dump"):
+            # Pydantic v2 - preserves snake_case field names
+            return task.research_plan.model_dump()
+        elif hasattr(task.research_plan, "dict"):
+            # Pydantic v1 - preserves snake_case field names
+            return task.research_plan.dict()
+        elif isinstance(task.research_plan, dict):
+            # Already a dict - return as-is
+            return task.research_plan
+        else:
+            return {}
     else:
         return {"message": "Research plan not yet generated"}
 

@@ -3,11 +3,13 @@ Unified Redis utilities for KestrelAI
 Provides consistent Redis communication between FastAPI backend and model loop
 """
 
+from __future__ import annotations
+
 import json
-import time
 import logging
-from typing import Dict, Any, Optional, List
+import time
 from datetime import datetime
+from typing import Any
 
 try:
     import redis
@@ -21,8 +23,14 @@ logger = logging.getLogger(__name__)
 
 class RedisConfig:
     """Redis configuration"""
-    def __init__(self, host: str = "localhost", port: int = 6379, db: int = 0, 
-                 url: Optional[str] = None):
+
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 6379,
+        db: int = 0,
+        url: str | None = None,
+    ):
         self.host = host
         self.port = port
         self.db = db
@@ -31,6 +39,7 @@ class RedisConfig:
 
 class RedisQueues:
     """Redis queue naming convention"""
+
     TASK_COMMANDS = "kestrel:queue:commands"
     TASK_UPDATES = "kestrel:queue:updates"
     TASK_ACTIVITIES = "kestrel:queue:activities"
@@ -47,6 +56,7 @@ class RedisQueues:
 
 class RedisKeys:
     """Redis key patterns"""
+
     TASK_STATE = "kestrel:task:{task_id}:state"
     TASK_METRICS = "kestrel:task:{task_id}:metrics"
     TASK_ACTIVITIES = "kestrel:task:{task_id}:activities"
@@ -58,19 +68,16 @@ class RedisKeys:
 
 class SyncRedisClient:
     """Synchronous Redis client for model loop"""
-    
+
     def __init__(self, config: RedisConfig):
         self.config = config
         self.redis = redis.Redis(
-            host=config.host, 
-            port=config.port, 
-            db=config.db, 
-            decode_responses=True
+            host=config.host, port=config.port, db=config.db, decode_responses=True
         )
-        self.task_id: Optional[str] = None
-        self.task_config: Dict[str, Any] = {}
+        self.task_id: str | None = None
+        self.task_config: dict[str, Any] = {}
 
-    def get_next_command(self, timeout: int = 1) -> Optional[Dict[str, Any]]:
+    def get_next_command(self, timeout: int = 1) -> dict[str, Any] | None:
         """Get next command from queue"""
         if self.task_id:
             queue = RedisQueues.task_specific(RedisQueues.TASK_COMMANDS, self.task_id)
@@ -93,7 +100,7 @@ class SyncRedisClient:
         self.redis.lpush(RedisQueues.TASK_UPDATES, json.dumps(update))
         self._update_task_state(task_id, update)
 
-    def _update_task_state(self, task_id: str, updates: Dict[str, Any]):
+    def _update_task_state(self, task_id: str, updates: dict[str, Any]):
         """Update task state in Redis"""
         key = RedisKeys.TASK_STATE.format(task_id=task_id)
         current = self.redis.get(key)
@@ -114,7 +121,7 @@ class SyncRedisClient:
         }
         self.redis.lpush(RedisQueues.TASK_ACTIVITIES, json.dumps(activity))
 
-    def send_search(self, task_id: str, query: str, results: int, sources: List[str]):
+    def send_search(self, task_id: str, query: str, results: int, sources: list[str]):
         """Send search information to backend"""
         now = datetime.now()
         payload = {
@@ -127,7 +134,13 @@ class SyncRedisClient:
         }
         self.redis.lpush(RedisQueues.TASK_SEARCHES, json.dumps(payload))
 
-    def send_report(self, task_id: str, title: str, content: str, metadata: Optional[Dict[str, Any]] = None):
+    def send_report(
+        self,
+        task_id: str,
+        title: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ):
         """Send report to backend"""
         report = {
             "taskId": task_id,
@@ -135,15 +148,15 @@ class SyncRedisClient:
             "content": content,
             "metadata": metadata or {},
             "timestamp": int(time.time() * 1000),
-            "format": "markdown"
+            "format": "markdown",
         }
         self.redis.lpush(RedisQueues.TASK_REPORTS, json.dumps(report))
 
-    def checkpoint(self, task_id: str, state: Dict[str, Any]):
+    def checkpoint(self, task_id: str, state: dict[str, Any]):
         """Save checkpoint state"""
         self.redis.set(f"kestrel:task:{task_id}:checkpoint", json.dumps(state))
 
-    def restore_checkpoint(self, task_id: str) -> Optional[Dict[str, Any]]:
+    def restore_checkpoint(self, task_id: str) -> dict[str, Any] | None:
         """Restore checkpoint state"""
         data = self.redis.get(f"kestrel:task:{task_id}:checkpoint")
         return json.loads(data) if data else None
@@ -151,16 +164,18 @@ class SyncRedisClient:
 
 class AsyncRedisClient:
     """Asynchronous Redis client for FastAPI backend"""
-    
+
     def __init__(self, config: RedisConfig):
         self.config = config
-        self.pool: Optional[AsyncConnectionPool] = None
-        self.redis: Optional[async_redis.Redis] = None
+        self.pool: AsyncConnectionPool | None = None
+        self.redis: async_redis.Redis | None = None
 
     async def connect(self):
         """Initialize async Redis connection"""
         try:
-            self.pool = AsyncConnectionPool.from_url(self.config.url, decode_responses=True)
+            self.pool = AsyncConnectionPool.from_url(
+                self.config.url, decode_responses=True
+            )
             self.redis = async_redis.Redis(connection_pool=self.pool)
             await self.redis.ping()
             logger.info("Async Redis connected successfully")
@@ -181,7 +196,9 @@ class AsyncRedisClient:
             raise RuntimeError("Redis not connected")
         return self.redis
 
-    async def send_command(self, task_id: str, command_type: str, payload: Dict[str, Any] = None):
+    async def send_command(
+        self, task_id: str, command_type: str, payload: dict[str, Any] = None
+    ):
         """Send command to agent via Redis queue"""
         try:
             r = await self.get_redis()
@@ -190,7 +207,7 @@ class AsyncRedisClient:
                 "taskId": task_id,
                 "type": command_type,
                 "payload": payload or {},
-                "timestamp": int(time.time() * 1000)
+                "timestamp": int(time.time() * 1000),
             }
 
             # Push to global command queue
@@ -206,7 +223,7 @@ class AsyncRedisClient:
             logger.error(f"Failed to send command: {e}")
             return False
 
-    async def get_task_from_redis(self, task_id: str) -> Optional[Dict[str, Any]]:
+    async def get_task_from_redis(self, task_id: str) -> dict[str, Any] | None:
         """Get task state from Redis"""
         try:
             r = await self.get_redis()
@@ -219,14 +236,14 @@ class AsyncRedisClient:
             logger.error(f"Failed to get task from Redis: {e}")
             return None
 
-    async def save_task_to_redis(self, task_data: Dict[str, Any]):
+    async def save_task_to_redis(self, task_data: dict[str, Any]):
         """Save task state to Redis"""
         try:
             r = await self.get_redis()
             task_id = task_data.get("id")
             if not task_id:
                 raise ValueError("Task ID is required")
-            
+
             key = RedisKeys.TASK_STATE.format(task_id=task_id)
             await r.set(key, json.dumps(task_data))
 
@@ -245,11 +262,11 @@ class AsyncRedisClient:
 
 
 # Global instances
-_sync_client: Optional[SyncRedisClient] = None
-_async_client: Optional[AsyncRedisClient] = None
+_sync_client: SyncRedisClient | None = None
+_async_client: AsyncRedisClient | None = None
 
 
-def get_sync_redis_client(config: Optional[RedisConfig] = None) -> SyncRedisClient:
+def get_sync_redis_client(config: RedisConfig | None = None) -> SyncRedisClient:
     """Get or create sync Redis client"""
     global _sync_client
     if _sync_client is None:
@@ -257,7 +274,7 @@ def get_sync_redis_client(config: Optional[RedisConfig] = None) -> SyncRedisClie
     return _sync_client
 
 
-def get_async_redis_client(config: Optional[RedisConfig] = None) -> AsyncRedisClient:
+def get_async_redis_client(config: RedisConfig | None = None) -> AsyncRedisClient:
     """Get or create async Redis client"""
     global _async_client
     if _async_client is None:
@@ -265,7 +282,7 @@ def get_async_redis_client(config: Optional[RedisConfig] = None) -> AsyncRedisCl
     return _async_client
 
 
-async def init_async_redis(config: Optional[RedisConfig] = None):
+async def init_async_redis(config: RedisConfig | None = None):
     """Initialize async Redis connection"""
     client = get_async_redis_client(config)
     await client.connect()

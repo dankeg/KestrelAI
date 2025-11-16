@@ -3,7 +3,7 @@ Test configuration and constants for KestrelAI tests.
 """
 
 import os
-from typing import Dict, Any, List
+from typing import Any
 
 # Test environment configuration
 TEST_CONFIG = {
@@ -14,20 +14,13 @@ TEST_CONFIG = {
     "redis_host": "localhost",
     "redis_port": 6379,
     "test_timeout": 30,
-    "mock_timeout": 5
+    "mock_timeout": 5,
 }
 
 # Service availability markers
 SERVICE_MARKERS = {
-    "requires_services": [
-        "Backend API",
-        "Frontend"
-    ],
-    "requires_optional_services": [
-        "Ollama",
-        "SearXNG", 
-        "Redis"
-    ]
+    "requires_services": ["Backend API", "Frontend"],
+    "requires_optional_services": ["Ollama", "SearXNG", "Redis"],
 }
 
 # Test categories
@@ -37,7 +30,7 @@ TEST_CATEGORIES = {
     "api": "Backend API endpoint tests",
     "frontend": "Frontend UI and theme tests",
     "e2e": "End-to-end workflow tests",
-    "performance": "Performance and regression tests"
+    "performance": "Performance and regression tests",
 }
 
 # Performance thresholds
@@ -56,31 +49,37 @@ TEST_DATA = {
     "sample_task_description": "A test research task for unit testing",
     "sample_subtask_count": 3,
     "default_timeout": 30,
-    "mock_response_delay": 0.1
+    "mock_response_delay": 0.1,
 }
 
-def get_test_config() -> Dict[str, Any]:
+
+def get_test_config() -> dict[str, Any]:
     """Get test configuration with environment overrides."""
     config = TEST_CONFIG.copy()
-    
+
     # Override with environment variables if present
     for key in config:
         env_key = f"TEST_{key.upper()}"
         if env_key in os.environ:
             config[key] = os.environ[env_key]
-    
+
     return config
 
-def get_service_requirements(category: str) -> List[str]:
+
+def get_service_requirements(category: str) -> list[str]:
     """Get required services for a test category."""
     if category in ["unit"]:
         return []
     elif category in ["integration", "api"]:
         return SERVICE_MARKERS["requires_services"]
     elif category in ["e2e", "performance"]:
-        return SERVICE_MARKERS["requires_services"] + SERVICE_MARKERS["requires_optional_services"]
+        return (
+            SERVICE_MARKERS["requires_services"]
+            + SERVICE_MARKERS["requires_optional_services"]
+        )
     else:
         return SERVICE_MARKERS["requires_services"]
+
 
 def get_performance_threshold(metric: str) -> float:
     """Get performance threshold for a metric."""

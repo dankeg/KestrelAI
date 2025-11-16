@@ -3,35 +3,46 @@ KestrelAI Research Agent with Redis Integration
 Extracted from Panel UI to work with Redis queues
 """
 
+import logging
 import os
-import json
-import time
 import pathlib
 import threading
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
-import logging
+import time
+from datetime import datetime
+from typing import Any
+
 try:
-    from KestrelAI.shared.models import Task, TaskStatus
-    from KestrelAI.memory.vector_store import MemoryStore
     from KestrelAI.agents.base import LlmWrapper
-    from KestrelAI.agents.web_research_agent import WebResearchAgent, ResearchConfig
     from KestrelAI.agents.research_orchestrator import ResearchOrchestrator
-    from KestrelAI.shared.redis_utils import (
-        RedisConfig, get_sync_redis_client
+    from KestrelAI.agents.web_research_agent import WebResearchAgent
+    from KestrelAI.memory.vector_store import MemoryStore
+    from KestrelAI.shared.models import (
+        ResearchPlan,
+        Task,
+        TaskMetrics,
+        TaskStatus,
     )
+    from KestrelAI.shared.models import (
+        Subtask as SharedSubtask,
+    )
+    from KestrelAI.shared.redis_utils import RedisConfig, get_sync_redis_client
 except ImportError:
     # Fallback for different import contexts (Docker, local, etc.)
-    from shared.models import Task, TaskStatus
-    from memory.vector_store import MemoryStore
     from agents.base import LlmWrapper
-    from agents.web_research_agent import WebResearchAgent, ResearchConfig
     from agents.research_orchestrator import ResearchOrchestrator
-    from shared.redis_utils import (
-        RedisConfig, get_sync_redis_client
+    from agents.web_research_agent import WebResearchAgent
+    from memory.vector_store import MemoryStore
+    from shared.models import (
+        ResearchPlan,
+        Task,
+        TaskMetrics,
+        TaskStatus,
     )
+    from shared.models import (
+        Subtask as SharedSubtask,
+    )
+    from shared.redis_utils import RedisConfig, get_sync_redis_client
 
-from copy import deepcopy
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -71,20 +82,20 @@ class KestrelAgentWorker:
         self.paused = False
         self.current_task_id = None
         self.current_task_config = {}
-        self.tasks: Dict[str, Task] = {}
+        self.tasks: dict[str, Task] = {}
         self.orchestrator = None
+        self.task_reports: dict[
+            str, list[str]
+        ] = {}  # Track all reports per task for accumulation
 
         # Settings management
-        self.app_settings = {
-            "ollamaMode": "local",
-            "orchestrator": "kestrel"
-        }
+        self.app_settings = {"ollamaMode": "local", "orchestrator": "kestrel"}
 
         self.latest_feedback = "No Feedback Yet!"
         self.latest_subtask = ""
 
         # Metrics tracking
-        self.task_metrics: Dict[str, Dict[str, Any]] = {}
+        self.task_metrics: dict[str, dict[str, Any]] = {}
         self.global_metrics = {
             "total_llm_calls": 0,
             "total_searches": 0,
@@ -112,11 +123,13 @@ class KestrelAgentWorker:
             if self.running and not self.paused and self.current_task_id:
                 self.process_task_step()
             else:
-                logger.debug(f"Not processing task: running={self.running}, paused={self.paused}, current_task_id={self.current_task_id}")
+                logger.debug(
+                    f"Not processing task: running={self.running}, paused={self.paused}, current_task_id={self.current_task_id}"
+                )
 
             time.sleep(0.5)  # Reasonable frequency for research processing
 
-    def handle_command(self, command: Dict[str, Any]):
+    def handle_command(self, command: dict[str, Any]):
         """Handle command from backend"""
         cmd_type = command.get("type")
         task_id = command.get("taskId")
@@ -137,7 +150,7 @@ class KestrelAgentWorker:
         elif cmd_type == "update_settings":
             self.update_settings(payload)
 
-    def start_task(self, task_id: str, config: Dict[str, Any]):
+    def start_task(self, task_id: str, config: dict[str, Any]):
         """Start a new research task"""
         self.current_task_id = task_id
         self.task_id = task_id  # Set for Redis client
@@ -155,30 +168,43 @@ class KestrelAgentWorker:
         # Initialize orchestrator with task and settings
         logger.info(f"Initializing orchestrator for task {task_id}")
         orchestrator_profile = self.app_settings.get("orchestrator", "kestrel")
-        self.orchestrator = ResearchOrchestrator([task], self.llm, profile=orchestrator_profile)
+        self.orchestrator = ResearchOrchestrator(
+            [task], self.llm, profile=orchestrator_profile
+        )
         logger.info(f"Orchestrator initialized for task {task_id}")
-        
+
         # Initialize planning phase in background thread to avoid blocking main loop
         logger.info(f"Starting planning phase for task {task_id}")
+
         def run_planning():
             import asyncio
+
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(self.orchestrator._planning_phase(task))
                 loop.close()
                 logger.info(f"Planning phase completed for task {task_id}")
+                # Initialize last research plan state and send initial research plan update
+                task_state = self.orchestrator.task_states.get(task.name)
+                if task_state and task_state.research_plan:
+                    self.task_metrics[task_id]["last_research_plan_state"] = {
+                        "subtask_index": task_state.subtask_index,
+                        "completed_subtasks": task_state.completed_subtasks.copy(),
+                    }
                 # Send research plan update after completion
                 self.send_research_plan_update(task_id, task.name)
             except Exception as e:
                 logger.error(f"Error during planning phase: {e}", exc_info=True)
-        
+
         planning_thread = threading.Thread(target=run_planning, daemon=True)
         planning_thread.start()
         logger.info(f"Planning phase started in background for task {task_id}")
-        
+
         # Get initial subtask
-        self.latest_subtask = self.orchestrator.get_current_subtask(task.name) or "Initial research"
+        self.latest_subtask = (
+            self.orchestrator.get_current_subtask(task.name) or "Initial research"
+        )
 
         # Initialize task metrics
         self.task_metrics[task_id] = {
@@ -189,6 +215,15 @@ class KestrelAgentWorker:
             "action_count": 0,
             "searches": [],
             "start_time": time.time(),
+        }
+
+        # Initialize task reports tracking
+        self.task_reports[task_id] = []
+
+        # Track last sent research plan state to detect changes
+        self.task_metrics[task_id]["last_research_plan_state"] = {
+            "subtask_index": -1,
+            "completed_subtasks": set(),
         }
 
         self.running = True
@@ -293,7 +328,7 @@ class KestrelAgentWorker:
 
             logger.info(f"Stopped task {task_id}")
 
-    def update_config(self, task_id: str, config: Dict[str, Any]):
+    def update_config(self, task_id: str, config: dict[str, Any]):
         """Update task configuration"""
         if task_id == self.current_task_id:
             self.current_task_config.update(config)
@@ -306,10 +341,10 @@ class KestrelAgentWorker:
 
             logger.info(f"Updated config for task {task_id}")
 
-    def update_settings(self, settings: Dict[str, Any]):
+    def update_settings(self, settings: dict[str, Any]):
         """Update application settings"""
         self.app_settings.update(settings)
-        
+
         # Apply settings to components
         if "ollamaMode" in settings:
             # Update LLM wrapper based on Ollama mode
@@ -320,12 +355,12 @@ class KestrelAgentWorker:
             else:
                 # Use local Ollama endpoint (faster on macOS)
                 ollama_host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-            
+
             self.llm = LlmWrapper(model="gemma3:27b", host=ollama_host)
-            
+
             # Update the agent with new LLM
             self.agent = WebResearchAgent("main-agent", self.llm, self.mem)
-        
+
         if "orchestrator" in settings:
             # Update orchestrator behavior based on setting
             if self.orchestrator:
@@ -333,27 +368,37 @@ class KestrelAgentWorker:
                 # Reinitialize orchestrator with new profile
                 if self.current_task_id and self.current_task_id in self.tasks:
                     task = self.tasks[self.current_task_id]
-                    self.orchestrator = ResearchOrchestrator([task], self.llm, profile=orchestrator_profile)
+                    self.orchestrator = ResearchOrchestrator(
+                        [task], self.llm, profile=orchestrator_profile
+                    )
                     # Re-run planning phase with new configuration (async method)
                     try:
                         import asyncio
+
                         # Use existing event loop or create new one
                         try:
                             loop = asyncio.get_event_loop()
                         except RuntimeError:
                             loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(loop)
-                        
+
                         try:
-                            loop.run_until_complete(self.orchestrator._planning_phase(task))
-                            self.latest_subtask = self.orchestrator.get_current_subtask(task.name) or "Initial research"
-                            logger.info(f"Orchestrator reinitialized with profile: {orchestrator_profile}")
+                            loop.run_until_complete(
+                                self.orchestrator._planning_phase(task)
+                            )
+                            self.latest_subtask = (
+                                self.orchestrator.get_current_subtask(task.name)
+                                or "Initial research"
+                            )
+                            logger.info(
+                                f"Orchestrator reinitialized with profile: {orchestrator_profile}"
+                            )
                         except Exception as e:
                             logger.error(f"Error reinitializing orchestrator: {e}")
                     except Exception as e:
                         logger.error(f"Error reinitializing orchestrator: {e}")
             logger.info(f"Orchestrator setting updated to: {settings['orchestrator']}")
-        
+
         logger.info(f"Updated app settings: {settings}")
 
     def process_task_step(self):
@@ -372,7 +417,7 @@ class KestrelAgentWorker:
             # Planning phase not complete yet, skip this iteration
             logger.debug(f"Waiting for planning phase to complete for task {task_id}")
             return
-        
+
         logger.info(f"Processing research step for task {task_id}")
 
         # Execute research step using orchestrator's subtask agents
@@ -380,15 +425,18 @@ class KestrelAgentWorker:
         try:
             # Run the async method properly
             import asyncio
+
             # Use existing event loop or create new one
             try:
                 loop = asyncio.get_event_loop()
             except RuntimeError:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-            
+
             try:
-                research_result = loop.run_until_complete(self.orchestrator.next_action(task))
+                research_result = loop.run_until_complete(
+                    self.orchestrator.next_action(task)
+                )
                 self.latest_feedback = research_result
                 logger.info(f"Research step completed: {research_result[:100]}...")
             except Exception as e:
@@ -399,28 +447,63 @@ class KestrelAgentWorker:
             logger.error(f"Error executing orchestrator step: {e}")
             research_result = f"Processing research step - {str(e)[:100]}"
             self.latest_feedback = research_result
-        
+
         # Get the latest notes from the orchestrator's current subtask
         current_subtask = self.orchestrator.get_current_subtask(task.name)
         if current_subtask:
             self.latest_subtask = current_subtask
-        
+
         # The research_result contains the actual research output with [SEARCH], [THOUGHT], etc.
         notes = research_result
 
         # Update local metrics with orchestrator's subtask agent metrics
         progress_info = self.orchestrator.get_task_progress(task.name)
-        
-        # Send research plan update if subtask progress has changed
-        self.send_research_plan_update(task_id, task.name)
-        
+
+        # Check if subtask state has changed and send research plan update if needed
+        task_state = self.orchestrator.task_states.get(task.name)
+        if task_state and task_state.research_plan:
+            last_state = self.task_metrics[task_id].get(
+                "last_research_plan_state",
+                {
+                    "subtask_index": -1,
+                    "completed_subtasks": set(),
+                },
+            )
+
+            # Check if subtask index or completed subtasks have changed
+            current_subtask_index = task_state.subtask_index
+            current_completed = task_state.completed_subtasks.copy()
+            last_completed = last_state.get("completed_subtasks", set())
+            # Convert sets to frozensets for comparison, or compare lengths and contents
+            last_completed_set = (
+                set(last_completed)
+                if isinstance(last_completed, (set, frozenset))
+                else set()
+            )
+
+            subtask_changed = (
+                current_subtask_index != last_state.get("subtask_index", -1)
+                or current_completed != last_completed_set
+            )
+
+            if subtask_changed:
+                logger.info(
+                    f"Subtask state changed for task {task_id}: index={current_subtask_index}, completed={current_completed}"
+                )
+                self.send_research_plan_update(task_id, task.name)
+                # Update last sent state
+                self.task_metrics[task_id]["last_research_plan_state"] = {
+                    "subtask_index": current_subtask_index,
+                    "completed_subtasks": current_completed.copy(),
+                }
+
         # Aggregate metrics from all subtask agents
         total_searches = 0
         total_thinks = 0
         total_summaries = 0
         total_checkpoints = 0
         total_actions = 0
-        
+
         for subtask_info in progress_info.get("subtasks", []):
             if "agent_metrics" in subtask_info:
                 metrics = subtask_info["agent_metrics"]
@@ -429,56 +512,81 @@ class KestrelAgentWorker:
                 total_summaries += metrics.get("total_summaries", 0)
                 total_checkpoints += metrics.get("total_checkpoints", 0)
                 total_actions += metrics.get("total_llm_calls", 0)
-        
-        self.task_metrics[task_id].update({
-            "search_count": total_searches,
-            "think_count": total_thinks,
-            "summary_count": total_summaries,
-            "checkpoint_count": total_checkpoints,
-            "action_count": total_actions,
-            "searches": [],  # Will be populated from subtask agents if needed
-            "search_history": [],
-            "current_focus": current_subtask or "Preparing research",
-        })
+
+        self.task_metrics[task_id].update(
+            {
+                "search_count": total_searches,
+                "think_count": total_thinks,
+                "summary_count": total_summaries,
+                "checkpoint_count": total_checkpoints,
+                "action_count": total_actions,
+                "searches": [],  # Will be populated from subtask agents if needed
+                "search_history": [],
+                "current_focus": current_subtask or "Preparing research",
+            }
+        )
 
         # Check for meaningful activity by examining the orchestrator's current subtask agent
         has_meaningful_activity = False
         activity_type = "analysis"
-        message = f"⚙️ Working on research"
-        
-        if hasattr(self.orchestrator, 'task_states') and task.name in self.orchestrator.task_states:
+        message = "⚙️ Working on research"
+
+        if (
+            hasattr(self.orchestrator, "task_states")
+            and task.name in self.orchestrator.task_states
+        ):
             task_state = self.orchestrator.task_states[task.name]
             if task_state.subtask_index in task_state.subtask_agents:
                 current_agent = task_state.subtask_agents[task_state.subtask_index]
                 if task.name in current_agent._state:
                     agent_state = current_agent._state[task.name]
-                    
+
                     # Check if there's new activity since last check
-                    last_action_count = self.task_metrics[task_id].get("last_agent_action_count", 0)
+                    last_action_count = self.task_metrics[task_id].get(
+                        "last_agent_action_count", 0
+                    )
                     if agent_state.action_count > last_action_count:
                         has_meaningful_activity = True
-                        
+
                         # Determine activity type based on recent actions with concise messages
-                        if agent_state.search_count > self.task_metrics[task_id].get("last_search_count", 0):
+                        if agent_state.search_count > self.task_metrics[task_id].get(
+                            "last_search_count", 0
+                        ):
                             activity_type = "search"
-                            message = f"🔍 Searching for opportunities"
-                        elif agent_state.think_count > self.task_metrics[task_id].get("last_think_count", 0):
+                            message = "🔍 Searching for opportunities"
+                        elif agent_state.think_count > self.task_metrics[task_id].get(
+                            "last_think_count", 0
+                        ):
                             activity_type = "thinking"
-                            message = f"🤔 Analyzing findings"
-                        elif agent_state.summary_count > self.task_metrics[task_id].get("last_summary_count", 0):
+                            message = "🤔 Analyzing findings"
+                        elif agent_state.summary_count > self.task_metrics[task_id].get(
+                            "last_summary_count", 0
+                        ):
                             activity_type = "summary"
-                            message = f"📝 Summarizing findings"
-                        elif agent_state.checkpoint_count > self.task_metrics[task_id].get("last_checkpoint_count", 0):
+                            message = "📝 Summarizing findings"
+                        elif agent_state.checkpoint_count > self.task_metrics[
+                            task_id
+                        ].get("last_checkpoint_count", 0):
                             activity_type = "checkpoint"
-                            message = f"💾 Saving progress"
-                        
+                            message = "💾 Saving progress"
+
                         # Update tracking
-                        self.task_metrics[task_id]["last_agent_action_count"] = agent_state.action_count
-                        self.task_metrics[task_id]["last_search_count"] = agent_state.search_count
-                        self.task_metrics[task_id]["last_think_count"] = agent_state.think_count
-                        self.task_metrics[task_id]["last_summary_count"] = agent_state.summary_count
-                        self.task_metrics[task_id]["last_checkpoint_count"] = agent_state.checkpoint_count
-        
+                        self.task_metrics[task_id][
+                            "last_agent_action_count"
+                        ] = agent_state.action_count
+                        self.task_metrics[task_id][
+                            "last_search_count"
+                        ] = agent_state.search_count
+                        self.task_metrics[task_id][
+                            "last_think_count"
+                        ] = agent_state.think_count
+                        self.task_metrics[task_id][
+                            "last_summary_count"
+                        ] = agent_state.summary_count
+                        self.task_metrics[task_id][
+                            "last_checkpoint_count"
+                        ] = agent_state.checkpoint_count
+
         # Send activity updates - either meaningful activity or periodic status updates
         if has_meaningful_activity:
             self.task_metrics[task_id]["action_count"] += 1
@@ -500,17 +608,21 @@ class KestrelAgentWorker:
             agent_metrics = self.agent.get_global_metrics()
             self.global_metrics.update(agent_metrics)
 
-        # Send updates with consistent metrics structure
-        metrics_update = {
-            "searchCount": self.task_metrics[task_id]["search_count"],
-            "thinkCount": self.task_metrics[task_id]["think_count"],
-            "summaryCount": self.task_metrics[task_id]["summary_count"],
-            "checkpointCount": self.task_metrics[task_id]["checkpoint_count"],
-            "webFetchCount": self.global_metrics.get("total_web_fetches", 0),
-            "llmTokensUsed": self.global_metrics.get("total_llm_calls", 0) * 1000,  # Estimate
-            "errorCount": 0,  # Add error count tracking
-        }
-        # logger.error(f"Current task Metrics{ self.task_metrics}")
+        # Send updates with consistent, strongly-typed metrics structure using
+        # the shared TaskMetrics model so the backend and model loop stay in sync.
+        metrics_model = TaskMetrics(
+            searchCount=self.task_metrics[task_id]["search_count"],
+            thinkCount=self.task_metrics[task_id]["think_count"],
+            summaryCount=self.task_metrics[task_id]["summary_count"],
+            checkpointCount=self.task_metrics[task_id]["checkpoint_count"],
+            webFetchCount=self.global_metrics.get("total_web_fetches", 0),
+            llmTokensUsed=self.global_metrics.get("total_llm_calls", 0) * 1000,
+            errorCount=0,
+        )
+        if hasattr(metrics_model, "model_dump"):
+            metrics_payload = metrics_model.model_dump()
+        else:
+            metrics_payload = metrics_model.dict()
 
         print(f"Task Information: {task}, {task.status}")
 
@@ -523,24 +635,27 @@ class KestrelAgentWorker:
             ),
             progress=progress,
             elapsed=int(elapsed),
-            metrics=metrics_update,
+            metrics=metrics_payload,
         )
 
         # Collect search queries from orchestrator's current subtask agent
         search_queries = []
-        if hasattr(self.orchestrator, 'task_states') and task.name in self.orchestrator.task_states:
+        if (
+            hasattr(self.orchestrator, "task_states")
+            and task.name in self.orchestrator.task_states
+        ):
             task_state = self.orchestrator.task_states[task.name]
             if task_state.subtask_index in task_state.subtask_agents:
                 current_agent = task_state.subtask_agents[task_state.subtask_index]
                 # Get task-specific metrics from the current agent
                 agent_task_metrics = current_agent.get_task_metrics(task.name)
                 search_queries = agent_task_metrics.get("searches", [])
-        
+
         # Send search history to Redis (only new searches)
         # Initialize sent_searches set if it doesn't exist
         if "sent_searches" not in self.task_metrics[task_id]:
             self.task_metrics[task_id]["sent_searches"] = set()
-        
+
         for query in search_queries:
             if query and query not in self.task_metrics[task_id]["sent_searches"]:
                 self.redis_client.send_search(
@@ -551,8 +666,9 @@ class KestrelAgentWorker:
 
         # Only send reports for actual research findings (not every loop iteration)
         # Send reports when there's meaningful research output (summaries, checkpoints, or substantial content)
-        if has_meaningful_activity and (activity_type in ["summary", "checkpoint"] or 
-                                      (notes and len(notes) > 200)):
+        if has_meaningful_activity and (
+            activity_type in ["summary", "checkpoint"] or (notes and len(notes) > 200)
+        ):
             # Save notes to file
             safe_name = "".join(
                 c if c.isalnum() or c in (" ", "-", "_") else "_" for c in task.name
@@ -568,58 +684,83 @@ class KestrelAgentWorker:
                 notes,
                 metadata={
                     "progress": progress,
-                    "action_count": self.task_metrics[task_id]["action_count"],
+                    "action_count": self.task_metrics[task_id].get("action_count", 0),
                     "activity_type": activity_type,
                 },
             )
 
         # Orchestrator already handled the research step above
         # No need to call next_action again here
-        
+
         # Check if task is complete based on orchestrator state or time budget
-        if (task.status == TaskStatus.COMPLETE or 
-            progress >= 100.0 or 
-            progress_info.get("progress", 0) >= 100.0):
+        if (
+            task.status == TaskStatus.COMPLETE
+            or progress >= 100.0
+            or progress_info.get("progress", 0) >= 100.0
+        ):
             self.stop_task()
 
     def send_research_plan_update(self, task_id: str, task_name: str):
         """Send research plan update to Redis"""
-        if not self.orchestrator or not hasattr(self.orchestrator, 'task_states'):
-            logger.warning(f"Cannot send research plan update: orchestrator not initialized for task {task_id}")
+        if not self.orchestrator or not hasattr(self.orchestrator, "task_states"):
+            logger.warning(
+                f"Cannot send research plan update: orchestrator not initialized for task {task_id}"
+            )
             return
-            
+
         task_state = self.orchestrator.task_states.get(task_name)
         if not task_state or not task_state.research_plan:
-            logger.warning(f"Cannot send research plan update: no research plan for task {task_id}")
-            return
-            
-        # Convert research plan to dict format
-        try:
-            research_plan_data = {
-                "restated_task": task_state.research_plan.restated_task,
-                "subtasks": [
-                    {
-                        "order": subtask.order,
-                        "description": subtask.description,
-                        "success_criteria": subtask.success_criteria,
-                        "status": "completed" if i in task_state.completed_subtasks else 
-                                 "in_progress" if i == task_state.subtask_index else "pending"
-                    }
-                    for i, subtask in enumerate(task_state.research_plan.subtasks)
-                ],
-                "current_subtask_index": task_state.subtask_index,
-                "created_at": int(time.time() * 1000)
-            }
-            
-            # Send research plan update
-            self.redis_client.send_update(
-                task_id, 
-                research_plan=research_plan_data
+            logger.warning(
+                f"Cannot send research plan update: no research plan for task {task_id}"
             )
-            
-            logger.info(f"Sent research plan update for task {task_id} with {len(research_plan_data['subtasks'])} subtasks")
+            return
+
+        # Convert research plan to dict format using shared Pydantic models so
+        # the backend and frontend see a consistent, validated schema.
+        try:
+            subtasks: list[SharedSubtask] = []
+            for i, subtask in enumerate(task_state.research_plan.subtasks):
+                status = (
+                    "completed"
+                    if i in task_state.completed_subtasks
+                    else ("in_progress" if i == task_state.subtask_index else "pending")
+                )
+                subtasks.append(
+                    SharedSubtask(
+                        order=subtask.order,
+                        description=subtask.description,
+                        success_criteria=subtask.success_criteria,
+                        status=status,
+                    )
+                )
+
+            research_plan_model = ResearchPlan(
+                restated_task=task_state.research_plan.restated_task,
+                subtasks=subtasks,
+                current_subtask_index=task_state.subtask_index,
+            )
+
+            if hasattr(research_plan_model, "model_dump"):
+                research_plan_data = research_plan_model.model_dump()
+            else:
+                research_plan_data = research_plan_model.dict()
+
+            # Send research plan update
+            self.redis_client.send_update(task_id, research_plan=research_plan_data)
+
+            logger.info(
+                f"Sent research plan update for task {task_id} with {len(research_plan_data['subtasks'])} subtasks"
+            )
+            logger.debug(
+                f"Research plan details: current_subtask_index={research_plan_data['current_subtask_index']}, "
+                f"completed={[i for i, s in enumerate(research_plan_data['subtasks']) if s['status'] == 'completed']}, "
+                f"in_progress={[i for i, s in enumerate(research_plan_data['subtasks']) if s['status'] == 'in_progress']}"
+            )
         except Exception as e:
-            logger.error(f"Failed to send research plan update for task {task_id}: {e}")
+            logger.error(
+                f"Failed to send research plan update for task {task_id}: {e}",
+                exc_info=True,
+            )
 
     def generate_final_report(self):
         """Generate and send final report"""
@@ -631,7 +772,25 @@ class KestrelAgentWorker:
         if not task:
             return
 
-        metrics = self.task_metrics.get(task_id, {})
+        # Build a JSON-serializable metrics snapshot for the final report using
+        # the shared TaskMetrics model. Do NOT pass self.task_metrics[task_id]
+        # directly, since it may contain internal helper fields with
+        # non-serializable types (e.g., sets).
+        raw_metrics = self.task_metrics.get(task_id, {})
+
+        metrics_model = TaskMetrics(
+            searchCount=raw_metrics.get("search_count", 0),
+            thinkCount=raw_metrics.get("think_count", 0),
+            summaryCount=raw_metrics.get("summary_count", 0),
+            checkpointCount=raw_metrics.get("checkpoint_count", 0),
+            webFetchCount=self.global_metrics.get("total_web_fetches", 0),
+            llmTokensUsed=self.global_metrics.get("total_llm_calls", 0) * 1000,
+            errorCount=0,
+        )
+        if hasattr(metrics_model, "model_dump"):
+            final_metrics = metrics_model.model_dump()
+        else:
+            final_metrics = metrics_model.dict()
 
         # Read the latest notes
         safe_name = "".join(
@@ -639,7 +798,7 @@ class KestrelAgentWorker:
         ).strip()
         notes_file = f"notes/{safe_name.upper()}.txt"
         if pathlib.Path(notes_file).exists():
-            with open(notes_file, "r", encoding="utf-8") as fh:
+            with open(notes_file, encoding="utf-8") as fh:
                 content = fh.read()
         else:
             content = "No research notes available."
@@ -653,10 +812,10 @@ class KestrelAgentWorker:
 **Status:** Complete
 
 ## Research Metrics
-- Total Searches: {metrics.get('search_count', 0)}
-- Analysis Steps: {metrics.get('think_count', 0)}
-- Summaries Created: {metrics.get('summary_count', 0)}
-- Checkpoints: {metrics.get('checkpoint_count', 0)}
+- Total Searches: {raw_metrics.get('search_count', 0)}
+- Analysis Steps: {raw_metrics.get('think_count', 0)}
+- Summaries Created: {raw_metrics.get('summary_count', 0)}
+- Checkpoints: {raw_metrics.get('checkpoint_count', 0)}
 
 ## Key Findings
 {content}
@@ -668,7 +827,7 @@ class KestrelAgentWorker:
             task_id,
             f"Final Report - {task.name}",
             report_content,
-            metadata={"final": True, "metrics": metrics},
+            metadata={"final": True, "metrics": final_metrics},
         )
 
 

@@ -1,0 +1,412 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Matches version tags like v1.0.0, v0.1.0, etc.
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ========== Tests (must pass first) ==========
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    
+    - name: Configure Poetry
+      run: |
+        poetry config virtualenvs.create true
+        poetry config virtualenvs.in-project true
+    
+    - name: Cache Poetry dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pypoetry
+        key: ${{ runner.os }}-poetry-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-poetry-${{ matrix.python-version }}-
+    
+    - name: Install dependencies
+      run: |
+        poetry install --no-interaction --with dev --extras all
+    
+    - name: Run Ruff
+      run: |
+        poetry run ruff check KestrelAI/ tests/ --output-format=github
+    
+    - name: Run Black (check)
+      run: |
+        poetry run black --check KestrelAI/ tests/
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    
+    - name: Configure Poetry
+      run: |
+        poetry config virtualenvs.create true
+        poetry config virtualenvs.in-project true
+    
+    - name: Cache Poetry dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pypoetry
+        key: ${{ runner.os }}-poetry-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-poetry-${{ matrix.python-version }}-
+    
+    - name: Install dependencies
+      run: |
+        poetry install --no-interaction --with dev --extras all
+    
+    - name: Set environment variables
+      run: |
+        echo "REDIS_HOST=localhost" >> $GITHUB_ENV
+        echo "REDIS_PORT=6379" >> $GITHUB_ENV
+        echo "OLLAMA_BASE_URL=http://localhost:11434" >> $GITHUB_ENV
+        echo "SEARXNG_URL=http://localhost:8080" >> $GITHUB_ENV
+        echo "ANONYMIZED_TELEMETRY=False" >> $GITHUB_ENV
+    
+    - name: Run unit tests
+      run: |
+        poetry run pytest tests/unit/ -v --tb=short -m unit --cov=KestrelAI --cov-report=xml --cov-report=term
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+    
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    
+    - name: Configure Poetry
+      run: |
+        poetry config virtualenvs.create true
+        poetry config virtualenvs.in-project true
+    
+    - name: Cache Poetry dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pypoetry
+        key: ${{ runner.os }}-poetry-3.11-${{ hashFiles('**/poetry.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-poetry-3.11-
+    
+    - name: Install dependencies
+      run: |
+        poetry install --no-interaction --with dev --extras all
+    
+    - name: Set environment variables
+      run: |
+        echo "REDIS_HOST=localhost" >> $GITHUB_ENV
+        echo "REDIS_PORT=6379" >> $GITHUB_ENV
+        echo "OLLAMA_BASE_URL=http://localhost:11434" >> $GITHUB_ENV
+        echo "SEARXNG_URL=http://localhost:8080" >> $GITHUB_ENV
+        echo "ANONYMIZED_TELEMETRY=False" >> $GITHUB_ENV
+    
+    - name: Run integration tests
+      run: |
+        poetry run pytest tests/integration/ -v --tb=short -m integration
+
+  api-tests:
+    name: API Tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+    
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    
+    - name: Configure Poetry
+      run: |
+        poetry config virtualenvs.create true
+        poetry config virtualenvs.in-project true
+    
+    - name: Cache Poetry dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pypoetry
+        key: ${{ runner.os }}-poetry-3.11-${{ hashFiles('**/poetry.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-poetry-3.11-
+    
+    - name: Install dependencies
+      run: |
+        poetry install --no-interaction --with dev --extras all
+    
+    - name: Set environment variables
+      run: |
+        echo "REDIS_HOST=localhost" >> $GITHUB_ENV
+        echo "REDIS_PORT=6379" >> $GITHUB_ENV
+    
+    - name: Run API tests
+      run: |
+        poetry run pytest tests/api/ -v --tb=short -m api
+
+  # ========== Build (depends on all tests) ==========
+  build:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests, integration-tests, api-tests]
+    env:
+      VERSION: ${{ github.ref_name }}
+      COMMIT_SHA: ${{ github.sha }}
+      IMAGE_PREFIX: ghcr.io/dankeg/kestrelai
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+
+      - name: Free disk space
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache
+          echo "Disk usage after cleanup:"
+          df -h
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version number
+        id: version
+        run: |
+          # Remove 'v' prefix if present (v1.0.0 -> 1.0.0)
+          VERSION_TAG="${{ env.VERSION }}"
+          VERSION_NUMBER="${VERSION_TAG#v}"
+          echo "version_number=${VERSION_NUMBER}" >> $GITHUB_OUTPUT
+          echo "Extracted version: ${VERSION_NUMBER} from tag: ${VERSION_TAG}"
+
+      - name: Build and tag images with version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION_NUMBER="${{ steps.version.outputs.version_number }}"
+          VERSION_TAG="${{ env.VERSION }}"
+          COMMIT_SHA="${{ env.COMMIT_SHA }}"
+          IMAGE_PREFIX="${{ env.IMAGE_PREFIX }}"
+
+          # Enumerate bake targets
+          targets=$(docker buildx bake --print -f docker-compose.yml | jq -r '.target | keys[]')
+
+          for t in $targets; do
+            echo "==> Building $t with version tags"
+
+            # Base tags:
+            # - Version tag (v1.0.0)
+            # - Version number (1.0.0)
+            # - Commit SHA for traceability
+            VERSION_TAG_FULL="${IMAGE_PREFIX}-${t}:${VERSION_TAG}"
+            VERSION_NUMBER_TAG="${IMAGE_PREFIX}-${t}:${VERSION_NUMBER}"
+            COMMIT_TAG="${IMAGE_PREFIX}-${t}:commit-${COMMIT_SHA}"
+
+            # Buildx bake does NOT support tags[0]/tags[1] keys.
+            # Instead, you pass multiple --set "$t.tags=..." entries,
+            # and Bake aggregates them into a tag list for that target.
+            SET_ARGS=(
+              "--set" "$t.push=true"
+              "--set" "$t.no-cache=false"
+              "--set" "$t.cache-from=type=registry,ref=${IMAGE_PREFIX}-${t}:buildcache"
+              "--set" "$t.cache-to=type=registry,ref=${IMAGE_PREFIX}-${t}:buildcache,mode=max"
+              "--set" "$t.tags=${VERSION_TAG_FULL}"
+              "--set" "$t.tags=${VERSION_NUMBER_TAG}"
+              "--set" "$t.tags=${COMMIT_TAG}"
+            )
+
+            # Add 'latest' tag for stable releases (not pre-releases like v1.0.0-alpha)
+            if [[ ! "$VERSION_NUMBER" =~ -(alpha|beta|rc) ]]; then
+              LATEST_TAG="${IMAGE_PREFIX}-${t}:latest"
+              SET_ARGS+=("--set" "$t.tags=${LATEST_TAG}")
+            fi
+
+            echo "Tags being applied:"
+            printf '  %s\n' "${VERSION_TAG_FULL}" "${VERSION_NUMBER_TAG}" "${COMMIT_TAG}"
+            if [[ ! "$VERSION_NUMBER" =~ -(alpha|beta|rc) ]]; then
+              echo "  ${LATEST_TAG}"
+            fi
+
+            # Build and push with all tags
+            docker buildx bake -f docker-compose.yml "$t" "${SET_ARGS[@]}"
+
+            # Clean up to free disk space
+            docker buildx prune -af --volumes || true
+            echo "==> Done with $t"
+          done
+
+          echo "Final disk usage:"
+          df -h
+
+  # ========== Release (depends on build) ==========
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      VERSION: ${{ github.ref_name }}
+      COMMIT_SHA: ${{ github.sha }}
+      IMAGE_PREFIX: ghcr.io/dankeg/kestrelai
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for changelog generation
+
+      - name: Extract version number
+        id: version
+        run: |
+          # Remove 'v' prefix if present (v1.0.0 -> 1.0.0)
+          VERSION_TAG="${{ env.VERSION }}"
+          VERSION_NUMBER="${VERSION_TAG#v}"
+          echo "version_number=${VERSION_NUMBER}" >> $GITHUB_OUTPUT
+          echo "Extracted version: ${VERSION_NUMBER} from tag: ${VERSION_TAG}"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          VERSION_TAG="${{ env.VERSION }}"
+          VERSION_NUMBER="${{ steps.version.outputs.version_number }}"
+          IMAGE_PREFIX="${{ env.IMAGE_PREFIX }}"
+          
+          # Get the previous tag
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "No previous tag found, generating full changelog"
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            echo "Generating changelog from $PREVIOUS_TAG to $VERSION_TAG"
+            CHANGELOG=$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+          
+          # Create release notes
+          RELEASE_NOTES=$(cat <<EOF
+          ## Release ${VERSION_TAG}
+          
+          ### Docker Images
+          
+          All images are available on GitHub Container Registry:
+          
+          - **Backend**: \`${IMAGE_PREFIX}-backend:${VERSION_TAG}\` or \`${IMAGE_PREFIX}-backend:${VERSION_NUMBER}\`
+          - **Frontend**: \`${IMAGE_PREFIX}-frontend:${VERSION_TAG}\` or \`${IMAGE_PREFIX}-frontend:${VERSION_NUMBER}\`
+          - **Agent**: \`${IMAGE_PREFIX}-agent:${VERSION_TAG}\` or \`${IMAGE_PREFIX}-agent:${VERSION_NUMBER}\`
+          
+          ### Changes
+          
+          ${CHANGELOG}
+          
+          ### Installation
+          
+          \`\`\`bash
+          docker pull ${IMAGE_PREFIX}-backend:${VERSION_TAG}
+          docker pull ${IMAGE_PREFIX}-frontend:${VERSION_TAG}
+          docker pull ${IMAGE_PREFIX}-agent:${VERSION_TAG}
+          \`\`\`
+          EOF
+          )
+          
+          # Save to file for the release step
+          echo "$RELEASE_NOTES" > release_notes.md
+          
+          # Also set as output (truncated for GitHub Actions output limits)
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ env.VERSION }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ contains(env.VERSION, '-') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

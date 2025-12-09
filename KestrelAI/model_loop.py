@@ -71,10 +71,16 @@ class KestrelAgentWorker:
 
         # Initialize AI components
         self.mem = MemoryStore()
-        # Use environment variable for Ollama host, default to localhost for local development
-        # CRITICAL: On macOS, use local Ollama for performance, not Docker Ollama
-        ollama_host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.llm = LlmWrapper(model="gemma3:27b", host=ollama_host)
+
+        # Load settings from Redis if available, otherwise use defaults
+        ollama_mode = self._load_ollama_mode_from_redis()
+        model_name = os.getenv("MODEL_NAME", "gemma3:27b")
+        ollama_host = self._get_ollama_host_for_mode(ollama_mode)
+
+        # Ensure model is available before initializing LLM
+        self._ensure_model_available(model_name, ollama_host)
+
+        self.llm = LlmWrapper(model=model_name, host=ollama_host)
         self.agent = WebResearchAgent("main-agent", self.llm, self.mem)
 
         # State management
@@ -88,8 +94,8 @@ class KestrelAgentWorker:
             str, list[str]
         ] = {}  # Track all reports per task for accumulation
 
-        # Settings management
-        self.app_settings = {"ollamaMode": "local", "orchestrator": "kestrel"}
+        # Settings management - use loaded mode or default to local
+        self.app_settings = {"ollamaMode": ollama_mode, "orchestrator": "kestrel"}
 
         self.latest_feedback = "No Feedback Yet!"
         self.latest_subtask = ""
@@ -106,6 +112,128 @@ class KestrelAgentWorker:
 
         # Ensure notes directory exists
         pathlib.Path("notes").mkdir(exist_ok=True)
+
+    def _load_ollama_mode_from_redis(self) -> str:
+        """Load Ollama mode from Redis settings if available"""
+        try:
+            import json
+
+            try:
+                import redis
+            except ImportError:
+                redis = None
+
+            # Use the existing Redis client instead of creating a new connection
+            # Wrap in try/except to handle Redis connection errors gracefully
+            try:
+                settings_data = self.redis_client.redis.get("kestrel:settings")
+                if settings_data:
+                    settings = json.loads(settings_data)
+                    mode = settings.get("ollamaMode", "local")
+                    logger.info(f"Loaded Ollama mode from Redis: {mode}")
+                    return mode
+            except Exception as e:
+                # Handle Redis connection errors (ConnectionError, TimeoutError, etc.)
+                if redis and isinstance(e, (redis.ConnectionError, redis.TimeoutError)):
+                    logger.debug(f"Redis not available for settings load: {e}")
+                elif isinstance(e, AttributeError):
+                    logger.debug(f"Redis client not properly initialized: {e}")
+                else:
+                    logger.debug(f"Error loading settings from Redis: {e}")
+        except Exception as e:
+            logger.debug(f"Could not load settings from Redis: {e}")
+
+        # Default to local mode
+        return "local"
+
+    def _is_running_in_docker(self) -> bool:
+        """Detect if running inside Docker container"""
+        # Check for Docker-specific files/environment
+        if os.path.exists("/.dockerenv"):
+            return True
+
+        if os.path.exists("/proc/self/cgroup"):
+            try:
+                with open("/proc/self/cgroup") as f:
+                    if "docker" in f.read():
+                        return True
+            except Exception:
+                pass
+
+        if os.getenv("container") == "docker":
+            return True
+
+        return False
+
+    def _get_ollama_host_for_mode(self, mode: str) -> str:
+        """Get Ollama host for a specific mode"""
+        # If OLLAMA_BASE_URL is explicitly set, it overrides mode
+        explicit_url = os.getenv("OLLAMA_BASE_URL")
+        if explicit_url:
+            logger.info(f"Using OLLAMA_BASE_URL from environment: {explicit_url}")
+            return explicit_url
+
+        # Otherwise, use mode-based defaults
+        if mode == "docker":
+            host = "http://ollama:11434"
+            logger.info(f"Using Docker Ollama mode: {host}")
+        else:
+            # Local mode: use host.docker.internal if in Docker, localhost otherwise
+            # Note: host.docker.internal works on Docker Desktop (Mac/Windows)
+            # On Linux Docker, users should set OLLAMA_BASE_URL or use docker mode
+            if self._is_running_in_docker():
+                host = "http://host.docker.internal:11434"
+                logger.info(f"Using local Ollama mode (from Docker): {host}")
+            else:
+                host = "http://localhost:11434"
+                logger.info(f"Using local Ollama mode: {host}")
+
+        return host
+
+    def _ensure_model_available(self, model_name: str, ollama_host: str):
+        """Check if model is available, and pull it if not"""
+        try:
+            import ollama
+
+            client = ollama.Client(host=ollama_host)
+
+            # Try to list models to check availability (with timeout handling)
+            try:
+                # Set a reasonable timeout to avoid blocking initialization
+                models = client.list()
+                available_models = [m.get("name", "") for m in models.get("models", [])]
+
+                # Check if model exists (exact match or name prefix match)
+                model_base = model_name.split(":")[0]
+                model_found = any(
+                    m == model_name or m.startswith(f"{model_base}:")
+                    for m in available_models
+                )
+
+                if model_found:
+                    logger.info(f"Model {model_name} is available")
+                else:
+                    logger.info(f"Model {model_name} not found, attempting to pull...")
+                    try:
+                        # Note: pull() can take a long time for large models
+                        # This is non-blocking for initialization but may delay first use
+                        client.pull(model_name)
+                        logger.info(f"Successfully pulled model {model_name}")
+                    except Exception as e:
+                        logger.warning(f"Could not pull model {model_name}: {e}")
+                        logger.warning(
+                            "Continuing - ensure model is available manually if needed"
+                        )
+            except Exception as e:
+                # Ollama might not be ready yet - this is okay, will retry on first use
+                logger.debug(
+                    f"Could not verify model availability (Ollama may not be ready): {e}"
+                )
+        except ImportError:
+            logger.debug("ollama package not available for model checking")
+        except Exception as e:
+            # Don't fail initialization if model check fails
+            logger.debug(f"Error checking model availability: {e}")
 
     def run(self):
         """Main agent loop"""
@@ -347,19 +475,23 @@ class KestrelAgentWorker:
 
         # Apply settings to components
         if "ollamaMode" in settings:
-            # Update LLM wrapper based on Ollama mode
-            # CRITICAL: On macOS, always prefer local Ollama for performance
-            if settings["ollamaMode"] == "docker":
-                # Use Docker Ollama endpoint (slower on macOS)
-                ollama_host = "http://ollama:11434"
-            else:
-                # Use local Ollama endpoint (faster on macOS)
-                ollama_host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            # Determine Ollama host based on mode
+            ollama_host = self._get_ollama_host_for_mode(settings["ollamaMode"])
+            model_name = os.getenv("MODEL_NAME", "gemma3:27b")
 
-            self.llm = LlmWrapper(model="gemma3:27b", host=ollama_host)
+            # Ensure model is available before updating LLM
+            self._ensure_model_available(model_name, ollama_host)
+
+            # Reinitialize LLM with new host
+            self.llm = LlmWrapper(model=model_name, host=ollama_host)
 
             # Update the agent with new LLM
             self.agent = WebResearchAgent("main-agent", self.llm, self.mem)
+
+            # If orchestrator exists, update its LLM reference too
+            if self.orchestrator and hasattr(self.orchestrator, "llm"):
+                self.orchestrator.llm = self.llm
+                logger.info("Updated orchestrator LLM reference")
 
         if "orchestrator" in settings:
             # Update orchestrator behavior based on setting

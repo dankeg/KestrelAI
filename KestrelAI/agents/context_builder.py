@@ -104,9 +104,9 @@ class ContextBuilder:
                 rag_content = self.retrieve_from_rag_func(
                     task,
                     query=rag_query,
-                    max_tokens=self.token_budget.rag_content
-                    if self.token_budget
-                    else None,
+                    max_tokens=(
+                        self.token_budget.rag_content if self.token_budget else None
+                    ),
                 )
                 if rag_content and rag_content != "(No previous findings)":
                     # Replace URLs with flags

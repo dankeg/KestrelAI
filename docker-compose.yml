@@ -77,9 +77,8 @@ services:
       - PYTHONPATH=/app
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - SEARXNG_URL=http://searxng:8080
-      - MODEL_NAME=${MODEL_NAME:-llama3.1}
+      - MODEL_NAME=${MODEL_NAME:-gemma3:27b}
       - OLLAMA_KEEP_ALIVE=24h
     volumes:
       - ./KestrelAI:/app
@@ -115,14 +114,15 @@ services:
       ollama: { condition: service_started }
     environment:
       - OLLAMA_HOST=ollama:11434
-      - MODEL_NAME=${MODEL_NAME:-llama3.1}
+      - MODEL_NAME=${MODEL_NAME:-gemma3:27b}
     volumes:
       - ollama-models:/root/.ollama
-    entrypoint: ["/bin/sh","-lc"]
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - >
-        until ollama list >/dev/null 2>&1; do sleep 1; done;
-        ollama pull ${MODEL_NAME} || true
+      - |
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        echo "Pulling model: $MODEL_NAME"
+        ollama pull "$MODEL_NAME" || echo "Warning: Failed to pull model $MODEL_NAME, continuing anyway"
     restart: "no"
     networks:
       - kestrel-network

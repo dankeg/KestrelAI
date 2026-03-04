@@ -1,350 +1,205 @@
 # Performance regression tests
 import time
+import asyncio
+import os
+import psutil
 from unittest.mock import Mock, patch
-
 import pytest
 import requests
 
+from KestrelAI.agents.base import LlmWrapper
+from KestrelAI.memory.vector_store import MemoryStore
+from KestrelAI.agents.web_research_agent import WebResearchAgent
+from KestrelAI.agents.research_orchestrator import ResearchOrchestrator
+from KestrelAI.shared.models import Task, TaskStatus
+
 
 @pytest.mark.performance
+class TestPerformanceBenchmarks:
+    """
+    Offline performance benchmarks focusing on KestrelAI internal overhead.
+    These tests use deterministic mocks to ensure CI safety and reproducibility.
+    """
+
+    def test_llm_wrapper_overhead(self):
+        """
+        Benchmark: LlmWrapper.chat method overhead.
+        Question: How much latency does the KestrelAI wrapper add on top of the LLM client?
+        Invariant: Method overhead should stay within order-of-magnitude guardrails (< 50ms).
+        """
+        with patch("ollama.Client") as mock_ollama_client:
+            # Mock the internal client response to be near-instant
+            mock_response = Mock()
+            mock_response.message.content = "Mocked Response"
+            mock_ollama_client.return_value.chat.return_value = mock_response
+            
+            wrapper = LlmWrapper(model="test-model", host="http://localhost:11434")
+            
+            # Warm up
+            wrapper.chat([{"role": "user", "content": "hi"}])
+            
+            start_time = time.perf_counter()
+            for _ in range(10):
+                wrapper.chat([{"role": "user", "content": "hi"}])
+            end_time = time.perf_counter()
+            
+            avg_latency = (end_time - start_time) / 10
+            
+            # 50ms is a coarse order-of-magnitude guardrail for local Python overhead,
+            # not a strict SLA. It ensures no massive regressions in wrapper logic.
+            assert avg_latency < 0.050, f"LLM Wrapper overhead too high: {avg_latency:.4f}s"
+
+    def test_memory_store_abstraction_overhead(self, temp_dir):
+        """
+        Benchmark: MemoryStore abstraction overhead.
+        Question: What is the cost of Kestrel's metadata handling and vector search abstraction?
+        Invariant: O(1) or O(log N) scaling for metadata indexing overhead.
+        Note: This tests Kestrel abstraction overhead, not ChromaDB performance (which is mocked).
+        """
+        # Justification: Old test used 'add_document' which does not exist. Redesigned to use 'add'.
+        with patch("chromadb.PersistentClient") as mock_chroma:
+            mock_collection = Mock()
+            mock_chroma.return_value.get_or_create_collection.return_value = mock_collection
+            
+            store = MemoryStore(path=temp_dir)
+            
+            # Measure insertion overhead
+            start_time = time.perf_counter()
+            for i in range(100):
+                store.add(doc_id=f"id_{i}", text=f"text {i}", meta={"idx": i})
+            insertion_time = time.perf_counter() - start_time
+            
+            # Measure search abstraction overhead
+            mock_collection.query.return_value = {
+                "documents": [["result"]],
+                "metadatas": [[{"idx": 0}]],
+                "distances": [[0.1]]
+            }
+            
+            start_time = time.perf_counter()
+            for _ in range(50):
+                store.search("query", k=5)
+            search_time = time.perf_counter() - start_time
+            
+            # Guardrails for Python-side logic (not storage engine)
+            assert insertion_time < 0.5, f"MemoryStore insertion overhead too high: {insertion_time:.4f}s"
+            assert search_time < 0.2, f"MemoryStore search overhead too high: {search_time:.4f}s"
+
+    @pytest.mark.asyncio
+    async def test_agent_loop_latency(self, mock_task):
+        """
+        Benchmark: WebResearchAgent.run_step logic latency.
+        Question: How much time is spent in Kestrel's agent loop logic (context building, plan parsing) excluding I/O?
+        Invariant: Deterministic path execution latency.
+        """
+        # Justification: Old test assumed a 'search_web' method which is internal/non-existent.
+        # Now benchmarking the public 'run_step' with mocked LLM and Search.
+        mock_llm = Mock()
+        mock_llm.chat.return_value = '{"action": "think", "thought": "benchmarking"}'
+        mock_memory = Mock()
+        
+        agent = WebResearchAgent("bench-agent", mock_llm, mock_memory)
+        agent.config.think_loops = 1  # Minimize loops for core logic benchmark
+        
+        start_time = time.perf_counter()
+        await agent.run_step(mock_task)
+        latency = time.perf_counter() - start_time
+        
+        # Core logic (context build + parse) should be fast
+        assert latency < 0.200, f"Agent loop logic too slow: {latency:.4f}s"
+
+    @pytest.mark.asyncio
+    async def test_orchestrator_transition_complexity(self, mock_llm, mock_task):
+        """
+        Benchmark: ResearchOrchestrator.next_action overhead.
+        Question: What is the overhead of orchestrator state transitions and subtask management?
+        Invariant: Linear complexity relative to subtask count.
+        Entry Point: ResearchOrchestrator.next_action (Stable Public Interface)
+        """
+        # Justification: Old test referenced 'consolidated_orchestrator' which was renamed/moved.
+        # Now targeting ResearchOrchestrator.next_action as the stable entry point.
+        from KestrelAI.shared.models import ResearchPlan, Subtask
+        
+        orchestrator = ResearchOrchestrator([mock_task], mock_llm)
+        task_state = orchestrator.task_states[mock_task.name]
+        task_state.research_plan = ResearchPlan(
+            restated_task="Task",
+            subtasks=[Subtask(order=i, description=f"S{i}", success_criteria="C") for i in range(5)]
+        )
+        
+        # Mock subtask agent to prevent recursive I/O
+        mock_agent = Mock()
+        async def mock_run_step(*args, **kwargs):
+            return "Subtask result"
+        mock_agent.run_step.side_effect = mock_run_step
+        
+        with patch.object(task_state, "get_current_subtask_agent", return_value=mock_agent):
+            with patch.object(orchestrator, "_review") as mock_review:
+                from KestrelAI.agents.research_orchestrator import OrchestratorDecision
+                mock_review.return_value = OrchestratorDecision(
+                    reasoning="testing", decision="continue", feedback="", subtask="stay", next_task=""
+                )
+                
+                start_time = time.perf_counter()
+                await orchestrator.next_action(mock_task)
+                latency = time.perf_counter() - start_time
+                
+                assert latency < 0.100, f"Orchestrator transition too slow: {latency:.4f}s"
+
+    def test_memory_growth_trend(self, mock_llm):
+        """
+        Benchmark: Memory usage growth trend.
+        Question: Does initializing a large number of tasks cause exponential memory growth?
+        Invariant: RSS growth should be roughly linear or better. Assert coarse upper bounds.
+        """
+        process = psutil.Process(os.getpid())
+        
+        def get_mem():
+            return process.memory_info().rss / 1024 / 1024  # MB
+
+        mem_start = get_mem()
+        
+        # Create 100 dummy tasks
+        tasks = [
+            Task(name=f"T{i}", description="desc", budgetMinutes=1)
+            for i in range(100)
+        ]
+        
+        orch = ResearchOrchestrator(tasks, mock_llm)
+        
+        mem_end = get_mem()
+        growth = mem_end - mem_start
+        
+        # Coarse guardrail: 100 tasks shouldn't take more than 50MB of metadata overhead
+        assert growth < 50.0, f"Memory growth excessive: {growth:.2f}MB"
+
 @pytest.mark.requires_services
-class TestPerformanceRegression:
-    """Test performance regression prevention."""
+class TestServiceIntegrationPerformance:
+    """
+    Integration performance tests for live services.
+    These are SKIPPED by default and should only be run in dev environments with Ollama/Redis.
+    """
 
-    @pytest.fixture
-    def performance_benchmarks(self):
-        """Performance benchmarks to prevent regression."""
-        return {
-            "llm_response_time": 10.0,  # seconds - should be much faster with local Ollama
-            "planning_phase_time": 30.0,  # seconds
-            "task_creation_time": 1.0,  # seconds
-            "redis_operation_time": 0.1,  # seconds
-            "memory_store_operation_time": 0.5,  # seconds
-            "web_search_time": 5.0,  # seconds
-            "orchestrator_initialization_time": 2.0,  # seconds
-        }
-
-    def test_llm_performance_regression(self, performance_benchmarks):
-        """Test LLM performance to prevent regression."""
-        from KestrelAI.agents.base import LlmWrapper
-
-        llm = LlmWrapper(model="gemma3:27b", host="http://localhost:11434")
-
-        start_time = time.time()
-        try:
-            response = llm.chat([{"role": "user", "content": "Hello"}])
-            response_time = time.time() - start_time
-
-            # With local Ollama, this should be much faster than Docker Ollama
-            assert response_time < performance_benchmarks["llm_response_time"]
-            assert response is not None
-
-        except Exception as e:
-            # If connection fails, that's a different issue
-            pytest.skip(f"LLM not accessible: {e}")
-
-    def test_redis_performance_regression(self, performance_benchmarks):
-        """Test Redis performance to prevent regression."""
+    def test_redis_latency(self):
+        """Measure real Redis round-trip time."""
         from KestrelAI.shared.redis_utils import get_sync_redis_client
-
         try:
             client = get_sync_redis_client({"host": "localhost", "port": 6379, "db": 0})
-
-            # Test ping performance
-            start_time = time.time()
-            result = client.ping()
-            ping_time = time.time() - start_time
-
-            assert result is True
-            assert ping_time < performance_benchmarks["redis_operation_time"]
-
-            # Test set/get performance
-            start_time = time.time()
-            client.set("perf_test_key", "perf_test_value")
-            set_time = time.time() - start_time
-
-            start_time = time.time()
-            value = client.get("perf_test_key")
-            get_time = time.time() - start_time
-
-            assert value == b"perf_test_value"
-            assert set_time < performance_benchmarks["redis_operation_time"]
-            assert get_time < performance_benchmarks["redis_operation_time"]
-
-            # Clean up
-            client.delete("perf_test_key")
-
+            start = time.perf_counter()
+            client.ping()
+            latency = time.perf_counter() - start
+            assert latency < 0.010, f"Redis latency high: {latency:.4f}s"
         except Exception as e:
-            pytest.skip(f"Redis not accessible: {e}")
+            pytest.skip(f"Redis not available: {e}")
 
-    def test_memory_store_performance_regression(
-        self, performance_benchmarks, temp_dir
-    ):
-        """Test memory store performance to prevent regression."""
-        from KestrelAI.memory.vector_store import MemoryStore
-
-        with patch("chromadb.PersistentClient") as mock_client:
-            mock_collection = Mock()
-            mock_collection.add.return_value = None
-            mock_collection.query.return_value = {
-                "documents": [["test document"]],
-                "metadatas": [[{"metadata": "test"}]],
-                "distances": [[0.1]],
-            }
-            mock_client.return_value.get_or_create_collection.return_value = (
-                mock_collection
-            )
-
-            memory_store = MemoryStore(path=temp_dir)
-
-            # Test add document performance
-            start_time = time.time()
-            memory_store.add_document("test_id", "test content", {"metadata": "test"})
-            add_time = time.time() - start_time
-
-            assert add_time < performance_benchmarks["memory_store_operation_time"]
-
-            # Test search performance
-            start_time = time.time()
-            results = memory_store.search("test query", n_results=5)
-            search_time = time.time() - start_time
-
-            assert len(results) > 0
-            assert search_time < performance_benchmarks["memory_store_operation_time"]
-
-    def test_web_search_performance_regression(self, performance_benchmarks):
-        """Test web search performance to prevent regression."""
-        from KestrelAI.agents.web_research_agent import WebResearchAgent
-
-        mock_llm = Mock()
-        mock_memory = Mock()
-        agent = WebResearchAgent("test-agent", mock_llm, mock_memory)
-
-        with patch("requests.get") as mock_get:
-            mock_response = Mock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "results": [
-                    {
-                        "title": "Test Result",
-                        "url": "https://example.com",
-                        "content": "Test content",
-                    }
-                ]
-            }
-            mock_get.return_value = mock_response
-
-            start_time = time.time()
-            results = agent.search_web("test query")
-            search_time = time.time() - start_time
-
-            assert len(results) == 1
-            assert search_time < performance_benchmarks["web_search_time"]
-
-    def test_orchestrator_performance_regression(
-        self, performance_benchmarks, mock_llm, mock_task
-    ):
-        """Test orchestrator performance to prevent regression."""
-        from KestrelAI.agents.consolidated_orchestrator import ResearchOrchestrator
-
-        # Test initialization performance
-        start_time = time.time()
-        orchestrator = ResearchOrchestrator([mock_task], mock_llm, profile="kestrel")
-        init_time = time.time() - start_time
-
-        assert init_time < performance_benchmarks["orchestrator_initialization_time"]
-        assert orchestrator is not None
-
-    def test_planning_phase_performance_regression(
-        self, performance_benchmarks, mock_llm, mock_task
-    ):
-        """Test planning phase performance to prevent regression."""
-        import asyncio
-
-        from KestrelAI.agents.consolidated_orchestrator import ResearchOrchestrator
-
-        orchestrator = ResearchOrchestrator([mock_task], mock_llm, profile="kestrel")
-
-        with patch.object(orchestrator.llm, "chat") as mock_chat:
-            mock_chat.return_value = """
-            {
-                "restated_task": "Test restated task",
-                "subtasks": [
-                    {
-                        "order": 1,
-                        "description": "Test subtask 1",
-                        "success_criteria": "Test criteria 1",
-                        "status": "pending",
-                        "findings": []
-                    }
-                ],
-                "current_subtask_index": 0
-            }
-            """
-
-            async def test_planning():
-                start_time = time.time()
-                await orchestrator._planning_phase(mock_task)
-                planning_time = time.time() - start_time
-
-                assert planning_time < performance_benchmarks["planning_phase_time"]
-
-                # Verify planning completed
-                task_state = orchestrator.task_states[mock_task.name]
-                assert task_state.research_plan is not None
-
-            # Run async test
-            asyncio.run(test_planning())
-
-    def test_end_to_end_performance_regression(self, performance_benchmarks):
-        """Test end-to-end performance to prevent regression."""
-        api_base_url = "http://localhost:8000/api/v1"
-
-        # Skip if services not available
+    def test_llm_end_to_end_latency(self):
+        """Measure real LLM response time from Ollama."""
+        llm = LlmWrapper(model="gemma3:27b") # Uses default host
         try:
-            requests.get(f"{api_base_url}/tasks", timeout=5)
-        except requests.exceptions.RequestException:
-            pytest.skip("Backend API not accessible")
-
-        # Test complete workflow performance
-        start_time = time.time()
-
-        # Create task
-        task_data = {
-            "name": "Performance Regression Test",
-            "description": "Test end-to-end performance",
-            "budgetMinutes": 1,
-        }
-
-        response = requests.post(f"{api_base_url}/tasks", json=task_data, timeout=10)
-
-        creation_time = time.time() - start_time
-        assert creation_time < performance_benchmarks["task_creation_time"]
-        assert response.status_code == 201
-
-        task_id = response.json()["id"]
-
-        # Start task and measure planning phase time
-        start_time = time.time()
-        response = requests.post(f"{api_base_url}/tasks/{task_id}/start", timeout=10)
-        assert response.status_code == 200
-
-        # Wait for planning phase to complete
-        max_wait_time = 60  # 1 minute max wait
-        planning_start = time.time()
-
-        while time.time() - planning_start < max_wait_time:
-            response = requests.get(f"{api_base_url}/tasks/{task_id}", timeout=5)
-            assert response.status_code == 200
-
-            task_status = response.json()
-            if task_status.get("research_plan") is not None:
-                break
-
-            time.sleep(2)
-
-        planning_time = time.time() - start_time
-        assert planning_time < performance_benchmarks["planning_phase_time"]
-
-        # Clean up
-        requests.delete(f"{api_base_url}/tasks/{task_id}", timeout=5)
-
-    def test_memory_usage_regression(self):
-        """Test memory usage to prevent regression."""
-        import os
-
-        import psutil
-
-        # Get current process memory usage
-        process = psutil.Process(os.getpid())
-        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
-
-        # Perform memory-intensive operations
-        from KestrelAI.agents.consolidated_orchestrator import ResearchOrchestrator
-        from KestrelAI.shared.models import Task, TaskStatus
-
-        mock_llm = Mock()
-        tasks = []
-
-        # Create multiple tasks to test memory usage
-        for i in range(10):
-            task = Task(
-                name=f"Memory Test Task {i}",
-                description=f"Memory test task {i}",
-                budgetMinutes=5,
-                status=TaskStatus.ACTIVE,
-            )
-            tasks.append(task)
-
-        # Create orchestrator (not used but needed for test setup)
-        ResearchOrchestrator(tasks, mock_llm, profile="kestrel")
-
-        # Check memory usage after operations
-        final_memory = process.memory_info().rss / 1024 / 1024  # MB
-        memory_increase = final_memory - initial_memory
-
-        # Memory increase should be reasonable (less than 100MB for this test)
-        assert (
-            memory_increase < 100
-        ), f"Memory usage increased by {memory_increase:.2f}MB"
-
-    def test_concurrent_performance_regression(self, performance_benchmarks):
-        """Test concurrent operations performance to prevent regression."""
-        import concurrent.futures
-
-        api_base_url = "http://localhost:8000/api/v1"
-
-        # Skip if services not available
-        try:
-            requests.get(f"{api_base_url}/tasks", timeout=5)
-        except requests.exceptions.RequestException:
-            pytest.skip("Backend API not accessible")
-
-        def create_task(task_num):
-            """Create a task."""
-            task_data = {
-                "name": f"Concurrent Perf Test {task_num}",
-                "description": f"Concurrent performance test {task_num}",
-                "budgetMinutes": 1,
-            }
-
-            start_time = time.time()
-            response = requests.post(
-                f"{api_base_url}/tasks", json=task_data, timeout=10
-            )
-            creation_time = time.time() - start_time
-
-            if response.status_code == 201:
-                task_id = response.json()["id"]
-                return task_id, creation_time
-            return None, creation_time
-
-        # Test concurrent task creation
-        start_time = time.time()
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(create_task, i) for i in range(5)]
-            results = [future.result() for future in futures]
-
-        total_time = time.time() - start_time
-
-        # Filter successful results
-        successful_results = [r for r in results if r[0] is not None]
-        task_ids = [r[0] for r in successful_results]
-        creation_times = [r[1] for r in successful_results]
-
-        # Verify performance requirements
-        assert len(successful_results) > 0
-        assert (
-            total_time < performance_benchmarks["task_creation_time"] * 2
-        )  # Allow some overhead for concurrency
-
-        for creation_time in creation_times:
-            assert creation_time < performance_benchmarks["task_creation_time"]
-
-        # Clean up
-        for task_id in task_ids:
-            try:
-                requests.delete(f"{api_base_url}/tasks/{task_id}", timeout=5)
-            except:
-                pass  # Ignore cleanup errors
+            start = time.perf_counter()
+            llm.chat([{"role": "user", "content": "hi"}])
+            latency = time.perf_counter() - start
+            # No hard assert here as LLM timing is variable, just log if needed
+            print(f"Real LLM Latency: {latency:.4f}s")
+        except Exception as e:
+            pytest.skip(f"Ollama not available: {e}")

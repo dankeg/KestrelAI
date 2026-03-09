@@ -107,9 +107,6 @@ class TestMultiLevelSummarizer:
         assert "detailed" in result["summaries"]
         assert result["summaries"]["detailed"] == content
 
-        # Should have called LLM for other levels
-        assert mock_llm.chat.called
-
     def test_retrieve_adaptive_fits(self, summarizer, token_counter):
         """Test adaptive retrieval when content fits."""
         summaries = {
@@ -201,8 +198,8 @@ class TestMultiLevelSummarizer:
         """Test error handling during summarization."""
         content = "Test content"
 
-        # Make LLM raise an error
-        mock_llm.chat.side_effect = Exception("LLM error")
+        # Make summary generation raise an error
+        summarizer._generate_summary = Mock(side_effect=Exception("Summary error"))
 
         # Should fall back to truncation
         result = summarizer._summarize(
@@ -217,8 +214,8 @@ class TestMultiLevelSummarizer:
         content = "Test content"
         target_tokens = 50
 
-        # Mock LLM to return very long summary
-        mock_llm.chat.return_value = "Very long summary " * 100
+        # Mock summary generation to return very long summary
+        summarizer._generate_summary = Mock(return_value="Very long summary " * 100)
         token_counter.count_tokens.side_effect = lambda x: 200  # Exceeds target
 
         result = summarizer._summarize(

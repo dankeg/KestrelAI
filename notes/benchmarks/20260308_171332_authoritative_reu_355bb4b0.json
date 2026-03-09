@@ -1,0 +1,86 @@
+{
+  "task_id": "355bb4b0",
+  "prompt": {
+    "id": "authoritative_reu",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budget_minutes": 30
+  },
+  "timings": {},
+  "task": {
+    "id": "355bb4b0",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budgetMinutes": 30,
+    "status": "active",
+    "progress": 0.0,
+    "elapsed": 0,
+    "metrics": {
+      "searchCount": 0,
+      "thinkCount": 0,
+      "summaryCount": 0,
+      "checkpointCount": 0,
+      "webFetchCount": 0,
+      "llmTokensUsed": 0,
+      "errorCount": 0
+    },
+    "research_plan": null,
+    "createdAt": 1773004407015,
+    "updatedAt": 1773004407583,
+    "config": {}
+  },
+  "plan": {
+    "message": "Research plan not yet generated"
+  },
+  "reports": [],
+  "export": {
+    "task": {
+      "id": "355bb4b0",
+      "name": "Authoritative REU Validation",
+      "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+      "budgetMinutes": 30,
+      "status": "active",
+      "progress": 0.0,
+      "elapsed": 0,
+      "metrics": {
+        "searchCount": 0,
+        "thinkCount": 0,
+        "summaryCount": 0,
+        "checkpointCount": 0,
+        "webFetchCount": 0,
+        "llmTokensUsed": 0,
+        "errorCount": 0
+      },
+      "research_plan": null,
+      "createdAt": 1773004407015,
+      "updatedAt": 1773004407583,
+      "config": {}
+    },
+    "activities": [
+      {
+        "id": "054b21f2",
+        "taskId": "355bb4b0",
+        "time": "21:13:27",
+        "type": "task_start",
+        "message": "\ud83e\udd85 Starting research: Authoritative REU Validation",
+        "metadata": {},
+        "timestamp": 1773004407537
+      }
+    ],
+    "searches": [],
+    "reports": [],
+    "exported_at": "2026-03-08T21:13:32.056926"
+  },
+  "quality_signals": {
+    "plan_subtask_count": 0,
+    "plan_has_low_signal_domains": false,
+    "report_has_verified_section": false,
+    "report_has_tentative_section": false,
+    "report_has_uncertainty_section": false,
+    "report_has_next_steps_section": false,
+    "authoritative_link_count": 0,
+    "report_count": 0,
+    "export_has_searches": false,
+    "export_has_reports": false
+  }
+}

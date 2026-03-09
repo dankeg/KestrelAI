@@ -39,6 +39,9 @@ CORE RULES:
 - Focus on ACTIONABLE information the user can apply to or use immediately
 - Prioritize specific programs over generic database descriptions
 - Find concrete details: exact deadlines, specific requirements, contact information
+- Prefer authoritative sources first: official program pages, .gov, .edu, primary organization sites, and peer-reviewed/research repositories
+- Treat secondary summaries as leads, not final evidence
+- If a claim is not verified by a primary or authoritative source, mark it as tentative and keep searching
 - Avoid generic advice that applies to any research topic
 - Do not make up information
 - Do not have conversations
@@ -80,12 +83,16 @@ Your goal is to find concrete details that the user can immediately act upon:
 SUBTASK CONTEXT:
 - Subtask: {self.config.subtask_description}
 - Success Criteria: {self.config.success_criteria}
+- Orchestrator Guidance: {self.config.orchestrator_guidance or "None yet"}
 - Previous Findings: {self.config.previous_findings}
 
 CORE RULES:
 - Focus on ACTIONABLE information the user can apply to or use immediately
 - Prioritize specific programs over generic database descriptions
 - Find concrete details: exact deadlines, specific requirements, contact information
+- Prefer authoritative sources first: official program pages, .gov, .edu, primary organization sites, and peer-reviewed/research repositories
+- Treat secondary summaries as leads, not final evidence
+- If a claim is not verified by a primary or authoritative source, mark it as tentative and keep searching
 - Avoid generic advice that applies to any research topic
 - Stay strictly focused on your assigned subtask
 - Conduct thorough research to meet the success criteria
@@ -110,11 +117,25 @@ OUTPUT FORMAT (JSON only):
   "thought": "detailed planning and brainstorming (if action is 'think', else empty string)"
 }}
 
+SEARCH QUERY RULES:
+- When action is "search", query must be a short, human-readable search engine query, not an instruction.
+- Do not write imperative phrases like "for each identified program", "collect key details", "create a table", or "assess eligibility".
+- Use entities, constraints, and evidence targets instead, for example:
+  - "Brown AI REU deadline eligibility 2024"
+  - "NSF REU machine learning undergraduate official site 2024"
+  - "WPI REU data science application deadline official"
+- Keep search queries under 14 words.
+
+SUMMARIZE / COMPLETE RULES:
+- Use "summarize" only to checkpoint evidence after multiple concrete searches.
+- Use "complete" only when the success criteria are actually met with source-backed details.
+- Do not use summarize or complete as a substitute for more searching.
+
 ACTIONS:
 - think: Reason about findings and plan next steps
 - search: Targeted, human readable queries for new information
-- summarize: Checkpoint important findings
-- complete: Indicate that the subtask success criteria have been met"""
+- summarize: Checkpoint important findings with explicit source-backed evidence
+- complete: Indicate that the subtask success criteria have been met only after multiple authoritative sources or direct primary evidence"""
 
     def get_mcp_system_prompt(self) -> str:
         """MCP-enhanced system prompt"""

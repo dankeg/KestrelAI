@@ -5,26 +5,15 @@ Provides clean abstractions and interfaces for all agent types
 
 from __future__ import annotations
 
-import json
-import logging
-import re
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-try:
-    from memory.vector_store import MemoryStore
-    from shared.models import Task
-
-    from .base import LlmWrapper
-except ImportError:
-    from KestrelAI.agents.base import LlmWrapper
-    from KestrelAI.memory.vector_store import MemoryStore
-    from KestrelAI.shared.models import Task
-
-logger = logging.getLogger(__name__)
+from KestrelAI.agents.base import LlmWrapper
+from KestrelAI.memory.vector_store import MemoryStore
+from KestrelAI.shared.models import Task
 
 
 @dataclass
@@ -43,6 +32,8 @@ class AgentState:
     checkpoints: list[str] = field(default_factory=list)
     current_focus: str = ""
     search_history: list[dict] = field(default_factory=list)
+    last_step_feedback: str = ""
+    last_step_activity: str = ""
 
     # Loop prevention
     repeated_queries: dict[str, int] = field(default_factory=dict)
@@ -115,33 +106,12 @@ class BaseAgent(ABC):
         pass
 
     def _chat(self, messages: list[dict]) -> str:
-        """Send chat request to LLM"""
+        """Send chat request, preferring LangChain adapter when available."""
         self.metrics["total_llm_calls"] += 1
+        adapter = getattr(self, "langchain_adapter", None)
+        if adapter is not None:
+            return adapter.chat(messages)
         return self.llm.chat(messages)
-
-    def _json_from(self, text: str) -> dict | None:
-        """Parse JSON from text with fallback patterns"""
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            # Try to extract from markdown code blocks
-            m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-            if m:
-                try:
-                    return json.loads(m.group(1))
-                except json.JSONDecodeError:
-                    pass
-
-            # Try first brace pattern
-            m = re.search(r"\{.*?\}", text, re.DOTALL)
-            if m:
-                try:
-                    return json.loads(m.group(0))
-                except json.JSONDecodeError:
-                    pass
-
-        logger.warning(f"No valid JSON found in response. Response text: {text}")
-        return None
 
     def _add_to_rag(
         self,

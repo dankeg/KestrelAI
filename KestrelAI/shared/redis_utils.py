@@ -21,6 +21,20 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _json_default(value: Any):
+    """JSON serializer fallback for runtime-only structures."""
+    if isinstance(value, (set, frozenset, tuple)):
+        return list(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _json_dumps(payload: Any) -> str:
+    """Serialize payloads safely for Redis transport/storage."""
+    return json.dumps(payload, default=_json_default)
+
+
 class RedisConfig:
     """Redis configuration"""
 
@@ -77,7 +91,7 @@ class SyncRedisClient:
         self.task_id: str | None = None
         self.task_config: dict[str, Any] = {}
 
-    def get_next_command(self, timeout: int = 1) -> dict[str, Any] | None:
+    def get_next_command(self, timeout: int = 10) -> dict[str, Any] | None:
         """Get next command from queue"""
         if self.task_id:
             queue = RedisQueues.task_specific(RedisQueues.TASK_COMMANDS, self.task_id)
@@ -89,25 +103,40 @@ class SyncRedisClient:
         result = self.redis.brpop(RedisQueues.TASK_COMMANDS, timeout=timeout)
         if result:
             _, data = result
-            command = json.loads(data)
-            if not self.task_id or command.get("taskId") == self.task_id:
-                return command
+            return json.loads(data)
         return None
 
     def send_update(self, task_id: str, **kwargs):
         """Send status update to backend"""
         update = {"taskId": task_id, "timestamp": int(time.time() * 1000), **kwargs}
-        self.redis.lpush(RedisQueues.TASK_UPDATES, json.dumps(update))
+        self.redis.lpush(RedisQueues.TASK_UPDATES, _json_dumps(update))
         self._update_task_state(task_id, update)
 
     def _update_task_state(self, task_id: str, updates: dict[str, Any]):
         """Update task state in Redis"""
         key = RedisKeys.TASK_STATE.format(task_id=task_id)
         current = self.redis.get(key)
-        task = json.loads(current) if current else {}
-        task.update(updates)
+        # Ignore late updates for tasks that no longer exist (e.g. deleted tasks).
+        # Writing partial payloads would corrupt the task state shape.
+        if not current:
+            return
+
+        try:
+            task = json.loads(current)
+        except (TypeError, json.JSONDecodeError):
+            return
+
+        if not isinstance(task, dict) or not task.get("id"):
+            return
+
+        safe_updates = {
+            key: value
+            for key, value in updates.items()
+            if key not in {"taskId", "timestamp"}
+        }
+        task.update(safe_updates)
         task["updatedAt"] = int(time.time() * 1000)
-        self.redis.set(key, json.dumps(task))
+        self.redis.set(key, _json_dumps(task))
 
     def send_activity(self, task_id: str, activity_type: str, message: str):
         """Send activity log to backend"""
@@ -119,7 +148,7 @@ class SyncRedisClient:
             "timestamp": int(time.time() * 1000),
             "time": now.strftime("%H:%M:%S"),
         }
-        self.redis.lpush(RedisQueues.TASK_ACTIVITIES, json.dumps(activity))
+        self.redis.lpush(RedisQueues.TASK_ACTIVITIES, _json_dumps(activity))
 
     def send_search(self, task_id: str, query: str, results: int, sources: list[str]):
         """Send search information to backend"""
@@ -132,7 +161,7 @@ class SyncRedisClient:
             "timestamp": int(time.time() * 1000),
             "time": now.strftime("%H:%M:%S"),
         }
-        self.redis.lpush(RedisQueues.TASK_SEARCHES, json.dumps(payload))
+        self.redis.lpush(RedisQueues.TASK_SEARCHES, _json_dumps(payload))
 
     def send_report(
         self,
@@ -150,11 +179,11 @@ class SyncRedisClient:
             "timestamp": int(time.time() * 1000),
             "format": "markdown",
         }
-        self.redis.lpush(RedisQueues.TASK_REPORTS, json.dumps(report))
+        self.redis.lpush(RedisQueues.TASK_REPORTS, _json_dumps(report))
 
     def checkpoint(self, task_id: str, state: dict[str, Any]):
         """Save checkpoint state"""
-        self.redis.set(f"kestrel:task:{task_id}:checkpoint", json.dumps(state))
+        self.redis.set(f"kestrel:task:{task_id}:checkpoint", _json_dumps(state))
 
     def restore_checkpoint(self, task_id: str) -> dict[str, Any] | None:
         """Restore checkpoint state"""
@@ -211,11 +240,11 @@ class AsyncRedisClient:
             }
 
             # Push to global command queue
-            await r.lpush(RedisQueues.TASK_COMMANDS, json.dumps(command))
+            await r.lpush(RedisQueues.TASK_COMMANDS, _json_dumps(command))
 
             # Also push to task-specific queue for targeted processing
             task_queue = RedisQueues.task_specific(RedisQueues.TASK_COMMANDS, task_id)
-            await r.lpush(task_queue, json.dumps(command))
+            await r.lpush(task_queue, _json_dumps(command))
 
             logger.info(f"Command sent: {command_type} for task {task_id}")
             return True
@@ -245,7 +274,7 @@ class AsyncRedisClient:
                 raise ValueError("Task ID is required")
 
             key = RedisKeys.TASK_STATE.format(task_id=task_id)
-            await r.set(key, json.dumps(task_data))
+            await r.set(key, _json_dumps(task_data))
 
             # Add to task lists
             await r.sadd(RedisKeys.ALL_TASKS, task_id)

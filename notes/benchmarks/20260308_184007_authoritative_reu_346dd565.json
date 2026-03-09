@@ -1,0 +1,225 @@
+{
+  "task_id": "346dd565",
+  "prompt": {
+    "id": "authoritative_reu",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budget_minutes": 30
+  },
+  "timings": {
+    "plan_generated_seconds": 47.17
+  },
+  "task": {
+    "id": "346dd565",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budgetMinutes": 30,
+    "status": "active",
+    "progress": 0.0,
+    "elapsed": 13,
+    "metrics": {
+      "searchCount": 0,
+      "thinkCount": 1,
+      "summaryCount": 0,
+      "checkpointCount": 0,
+      "webFetchCount": 0,
+      "llmTokensUsed": 0,
+      "errorCount": 0
+    },
+    "research_plan": {
+      "restated_task": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+      "subtasks": [
+        {
+          "order": 1,
+          "description": "Identify Relevant NSF REU Programs \u2013 Broad Discovery",
+          "success_criteria": "Generate a list of at least 10 NSF REU programs in AI and machine learning for undergraduates active in 2024. Document the program name, institution, principal investigator (PI), and a brief description of the research focus.",
+          "status": "in_progress",
+          "findings": []
+        },
+        {
+          "order": 2,
+          "description": "Verify Deadlines and Eligibility Criteria \u2013 Authoritative Verification",
+          "success_criteria": "For each identified REU program, determine the application deadline and confirm eligibility requirements (e.g., major, GPA, degree level) directly from the official NSF REU website or the program\u2019s website. Record the deadline and eligibility details for each program.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 3,
+          "description": "Verify candidate opportunities and program requirements directly from official NSF and university program sources.",
+          "success_criteria": "Confirm which opportunities are real, current, and relevant by checking official program pages for deadlines, eligibility, and research focus.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 4,
+          "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+          "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+          "status": "pending",
+          "findings": []
+        }
+      ],
+      "current_subtask_index": 0,
+      "created_at": 1773009529546
+    },
+    "createdAt": 1773009482711,
+    "updatedAt": 1773009550184,
+    "config": {}
+  },
+  "plan": {
+    "restated_task": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "subtasks": [
+      {
+        "order": 1,
+        "description": "Identify Relevant NSF REU Programs \u2013 Broad Discovery",
+        "success_criteria": "Generate a list of at least 10 NSF REU programs in AI and machine learning for undergraduates active in 2024. Document the program name, institution, principal investigator (PI), and a brief description of the research focus.",
+        "status": "in_progress",
+        "findings": []
+      },
+      {
+        "order": 2,
+        "description": "Verify Deadlines and Eligibility Criteria \u2013 Authoritative Verification",
+        "success_criteria": "For each identified REU program, determine the application deadline and confirm eligibility requirements (e.g., major, GPA, degree level) directly from the official NSF REU website or the program\u2019s website. Record the deadline and eligibility details for each program.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 3,
+        "description": "Verify candidate opportunities and program requirements directly from official NSF and university program sources.",
+        "success_criteria": "Confirm which opportunities are real, current, and relevant by checking official program pages for deadlines, eligibility, and research focus.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 4,
+        "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+        "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+        "status": "pending",
+        "findings": []
+      }
+    ],
+    "current_subtask_index": 0,
+    "created_at": 1773009529546
+  },
+  "reports": [
+    {
+      "id": "37fb68b0",
+      "taskId": "346dd565",
+      "timestamp": 1773009539630,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Run at least 1 more targeted searches tied directly to the current success criteria. Increase search diversity with at least 1 additional distinct query variants. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing.",
+      "format": "markdown",
+      "metadata": {
+        "progress": 0.13703564802805582,
+        "action_count": 1,
+        "activity_type": "thinking"
+      }
+    }
+  ],
+  "export": {
+    "task": {
+      "id": "346dd565",
+      "name": "Authoritative REU Validation",
+      "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+      "budgetMinutes": 30,
+      "status": "active",
+      "progress": 0.0,
+      "elapsed": 13,
+      "metrics": {
+        "searchCount": 0,
+        "thinkCount": 1,
+        "summaryCount": 0,
+        "checkpointCount": 0,
+        "webFetchCount": 0,
+        "llmTokensUsed": 0,
+        "errorCount": 0
+      },
+      "research_plan": {
+        "restated_task": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+        "subtasks": [
+          {
+            "order": 1,
+            "description": "Identify Relevant NSF REU Programs \u2013 Broad Discovery",
+            "success_criteria": "Generate a list of at least 10 NSF REU programs in AI and machine learning for undergraduates active in 2024. Document the program name, institution, principal investigator (PI), and a brief description of the research focus.",
+            "status": "in_progress",
+            "findings": []
+          },
+          {
+            "order": 2,
+            "description": "Verify Deadlines and Eligibility Criteria \u2013 Authoritative Verification",
+            "success_criteria": "For each identified REU program, determine the application deadline and confirm eligibility requirements (e.g., major, GPA, degree level) directly from the official NSF REU website or the program\u2019s website. Record the deadline and eligibility details for each program.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 3,
+            "description": "Verify candidate opportunities and program requirements directly from official NSF and university program sources.",
+            "success_criteria": "Confirm which opportunities are real, current, and relevant by checking official program pages for deadlines, eligibility, and research focus.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 4,
+            "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+            "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+            "status": "pending",
+            "findings": []
+          }
+        ],
+        "current_subtask_index": 0,
+        "created_at": 1773009529546
+      },
+      "createdAt": 1773009482711,
+      "updatedAt": 1773009550184,
+      "config": {}
+    },
+    "activities": [
+      {
+        "id": "b3c29da8",
+        "taskId": "346dd565",
+        "time": "22:38:59",
+        "type": "thinking",
+        "message": "\ud83e\udd14 Analyzing findings",
+        "metadata": {},
+        "timestamp": 1773009539627
+      },
+      {
+        "id": "80867a31",
+        "taskId": "346dd565",
+        "time": "22:38:36",
+        "type": "task_start",
+        "message": "\ud83e\udd85 Starting research: Authoritative REU Validation",
+        "metadata": {},
+        "timestamp": 1773009516107
+      }
+    ],
+    "searches": [],
+    "reports": [
+      {
+        "id": "37fb68b0",
+        "taskId": "346dd565",
+        "timestamp": 1773009539630,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Run at least 1 more targeted searches tied directly to the current success criteria. Increase search diversity with at least 1 additional distinct query variants. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing.",
+        "format": "markdown",
+        "metadata": {
+          "progress": 0.13703564802805582,
+          "action_count": 1,
+          "activity_type": "thinking"
+        }
+      }
+    ],
+    "exported_at": "2026-03-08T22:40:07.124429"
+  },
+  "quality_signals": {
+    "plan_subtask_count": 4,
+    "plan_has_low_signal_domains": false,
+    "report_has_verified_section": false,
+    "report_has_tentative_section": false,
+    "report_has_uncertainty_section": false,
+    "report_has_next_steps_section": false,
+    "authoritative_link_count": 0,
+    "report_count": 1,
+    "export_has_searches": false,
+    "export_has_reports": true
+  }
+}

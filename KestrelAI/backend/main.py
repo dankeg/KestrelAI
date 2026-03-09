@@ -9,39 +9,31 @@ import asyncio
 import json
 import logging
 import os
-import random
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-# Import shared models and utilities
-try:
-    from KestrelAI.shared.models import ResearchPlan, Task, TaskMetrics, TaskStatus
-    from KestrelAI.shared.redis_utils import (
-        RedisConfig,
-        RedisKeys,
-        RedisQueues,
-        close_async_redis,
-        get_async_redis_client,
-        init_async_redis,
-    )
-except ImportError:
-    # Fallback for different import contexts (Docker, local, etc.)
-    from shared.models import ResearchPlan, Task, TaskMetrics, TaskStatus
-    from shared.redis_utils import (
-        RedisConfig,
-        RedisKeys,
-        RedisQueues,
-        close_async_redis,
-        get_async_redis_client,
-        init_async_redis,
-    )
+from KestrelAI.shared.models import ResearchPlan, Task, TaskMetrics, TaskStatus
+from KestrelAI.shared.redis_utils import (
+    RedisConfig,
+    RedisKeys,
+    RedisQueues,
+    close_async_redis,
+    get_async_redis_client,
+    init_async_redis,
+)
+from KestrelAI.shared.runtime_settings import (
+    get_default_model_name,
+    normalize_max_context_tokens,
+    resolve_llm_base_url,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -229,6 +221,48 @@ class AppSettings(BaseModel):
         default=Orchestrator.kestrel, description="Research orchestrator profile"
     )
     theme: Theme = Field(default=Theme.amber, description="UI theme color scheme")
+    modelName: str = Field(
+        default_factory=get_default_model_name,
+        min_length=1,
+        description="Selected model identifier for the active LLM provider",
+    )
+    maxContextTokens: int = Field(
+        default_factory=lambda: normalize_max_context_tokens(
+            os.getenv("MAX_CONTEXT_TOKENS", "32768")
+        ),
+        ge=2048,
+        le=262144,
+        description="Maximum context window used by agent/orchestrator token budgeting",
+    )
+
+    @field_validator("modelName")
+    @classmethod
+    def validate_model_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class AvailableModelsResponse(BaseModel):
+    mode: OllamaMode
+    host: str
+    models: list[str] = Field(default_factory=list)
+    selected: str | None = None
+    error: str | None = None
+
+
+class CreateTaskRequest(BaseModel):
+    """Validated request model for task creation."""
+
+    name: str = Field(default="New Research Task")
+    description: str = ""
+    budgetMinutes: int = Field(default=180, ge=1)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("Task name cannot be empty")
+        return value.strip()
 
 
 # Helper Functions - Research plan uses snake_case in both frontend and backend
@@ -254,6 +288,26 @@ async def init_redis():
 async def close_redis():
     """Close Redis connection"""
     await close_async_redis()
+
+
+def _is_running_in_docker() -> bool:
+    if os.path.exists("/.dockerenv"):
+        return True
+    if os.path.exists("/proc/self/cgroup"):
+        try:
+            with open("/proc/self/cgroup", encoding="utf-8") as f:
+                if "docker" in f.read():
+                    return True
+        except Exception:
+            pass
+    return os.getenv("container") == "docker"
+
+
+def _resolve_ollama_host(mode: OllamaMode) -> str:
+    return resolve_llm_base_url(
+        mode=mode.value,
+        running_in_docker=_is_running_in_docker(),
+    )
 
 
 # Task Queue Operations - now using unified Redis utilities
@@ -294,9 +348,12 @@ async def process_queues():
         try:
             r = await get_redis()
 
-            # Process task updates
-            raw = await r.rpop(RedisQueues.TASK_UPDATES)
-            if raw:
+            # Process task updates in batches to avoid head-of-line blocking
+            # when one task emits a large update volume.
+            for _ in range(200):
+                raw = await r.rpop(RedisQueues.TASK_UPDATES)
+                if not raw:
+                    break
                 try:
                     update_data = json.loads(raw)
                     task = await get_task_from_redis(update_data.get("taskId"))
@@ -319,14 +376,17 @@ async def process_queues():
                             # Map TaskMetrics fields to SystemMetrics fields
                             system_metrics = {
                                 "taskId": update_data["taskId"],
-                                "llmCalls": metrics_dict.get("llmTokensUsed", 0)
-                                // 1000,  # Approximate
+                                "llmCalls": max(
+                                    0,
+                                    int(metrics_dict.get("llmTokensUsed", 0) or 0)
+                                    // 1000,
+                                ),
                                 "searches": metrics_dict.get("searchCount", 0),
-                                "pagesAnalyzed": 0,  # Not tracked in TaskMetrics
+                                "pagesAnalyzed": metrics_dict.get("webFetchCount", 0),
                                 "summaries": metrics_dict.get("summaryCount", 0),
                                 "checkpoints": metrics_dict.get("checkpointCount", 0),
                                 "tokensUsed": metrics_dict.get("llmTokensUsed", 0),
-                                "estimatedCost": 0.0,  # Not calculated yet
+                                "estimatedCost": 0.0,
                                 "timestamp": update_data.get(
                                     "timestamp", int(datetime.now().timestamp() * 1000)
                                 ),
@@ -507,7 +567,7 @@ async def process_queues():
                     logger.error(f"Error processing metrics: {e}")
 
             # Short sleep to prevent CPU spinning
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.02)
 
         except Exception as e:
             logger.error(f"Error processing queues: {e}")
@@ -541,6 +601,7 @@ async def root():
 
 
 @app.get("/settings", response_model=AppSettings)
+@app.get("/api/v1/settings", response_model=AppSettings)
 async def get_settings():
     """Get current application settings"""
     try:
@@ -556,6 +617,7 @@ async def get_settings():
 
 
 @app.post("/settings", response_model=AppSettings)
+@app.post("/api/v1/settings", response_model=AppSettings)
 async def save_settings(settings: AppSettings):
     """Save application settings"""
     global settings_memory
@@ -577,6 +639,45 @@ async def save_settings(settings: AppSettings):
         # Fallback to in-memory storage
         settings_memory = settings
         return settings
+
+
+@app.get("/settings/models", response_model=AvailableModelsResponse)
+@app.get("/api/v1/settings/models", response_model=AvailableModelsResponse)
+async def get_available_models(mode: OllamaMode | None = Query(default=None)):
+    """Discover available models directly from Ollama (/api/tags)."""
+    current_settings = await get_settings()
+    selected_mode = mode or current_settings.ollamaMode
+    host = _resolve_ollama_host(selected_mode)
+    tags_url = f"{host.rstrip('/')}/api/tags"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(tags_url)
+            response.raise_for_status()
+            payload = response.json()
+
+        models = sorted(
+            {
+                str(item.get("name", "")).strip()
+                for item in payload.get("models", [])
+                if str(item.get("name", "")).strip()
+            }
+        )
+        selected = current_settings.modelName or (models[0] if models else None)
+        return AvailableModelsResponse(
+            mode=selected_mode,
+            host=host,
+            models=models,
+            selected=selected,
+        )
+    except Exception as e:
+        logger.warning("Failed to fetch Ollama model list from %s: %s", tags_url, e)
+        return AvailableModelsResponse(
+            mode=selected_mode,
+            host=host,
+            selected=current_settings.modelName or None,
+            error=str(e),
+        )
 
 
 @app.get("/api/v1/tasks", response_model=list[Task])
@@ -613,15 +714,15 @@ async def get_task(task_id: str):
     raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
 
 
-@app.post("/api/v1/tasks", response_model=Task)
-async def create_task(task_data: dict[str, Any], background_tasks: BackgroundTasks):
+@app.post("/api/v1/tasks", response_model=Task, status_code=201)
+async def create_task(task_data: CreateTaskRequest, background_tasks: BackgroundTasks):
     """Create a new task"""
     task = Task(
-        name=task_data.get("name", "New Research Task"),
-        description=task_data.get("description", ""),
-        budgetMinutes=task_data.get("budgetMinutes", 180),
+        name=task_data.name,
+        description=task_data.description,
+        budgetMinutes=task_data.budgetMinutes,
         status=TaskStatus.CONFIGURING,
-        config=task_data.get("config", {}),
+        config=task_data.config,
     )
 
     try:
@@ -744,6 +845,7 @@ async def start_task(task_id: str):
             task_id,
             CommandType.START,
             {
+                "name": task.name,
                 "description": task.description,
                 "budgetMinutes": task.budgetMinutes,
                 "config": task.config,
@@ -829,25 +931,9 @@ async def get_task_activity(
 
         return activities
     except:
-        # Fallback to in-memory storage or generate mock data
         if task_id in activities_memory:
             return activities_memory[task_id][:limit]
-
-        # Generate mock activities if none exist
-        mock_activities = []
-        base_time = datetime.now()
-        for i in range(4):
-            time_offset = base_time - timedelta(minutes=i * 2)
-            mock_activities.append(
-                ActivityEntry(
-                    taskId=task_id,
-                    time=time_offset.strftime("%H:%M:%S"),
-                    type=random.choice(list(ActivityType)),
-                    message=f"Mock activity {i+1}",
-                    timestamp=int(time_offset.timestamp() * 1000),
-                )
-            )
-        return mock_activities[:limit]
+        return []
 
 
 @app.get("/api/v1/tasks/{task_id}/searches", response_model=list[SearchEntry])
@@ -868,31 +954,9 @@ async def get_task_search_history(
 
         return searches
     except:
-        # Fallback to in-memory storage or generate mock data
         if task_id in searches_memory:
             return searches_memory[task_id][:limit]
-
-        # Generate mock searches
-        mock_searches = []
-        base_time = datetime.now()
-        queries = [
-            "AI research grants 2025",
-            "Machine learning fellowships undergraduate",
-            "NSF REU programs deadline",
-        ]
-        for i, query in enumerate(queries):
-            time_offset = base_time - timedelta(minutes=i * 5)
-            mock_searches.append(
-                SearchEntry(
-                    taskId=task_id,
-                    time=time_offset.strftime("%H:%M:%S"),
-                    query=query,
-                    results=random.randint(5, 25),
-                    sources=["google.com", "bing.com"],
-                    timestamp=int(time_offset.timestamp() * 1000),
-                )
-            )
-        return mock_searches[:limit]
+        return []
 
 
 @app.get("/api/v1/tasks/{task_id}/reports", response_model=list[Report])
@@ -908,18 +972,9 @@ async def get_task_reports(task_id: str):
 
         return reports
     except:
-        # Fallback to in-memory storage or generate mock data
         if task_id in reports_memory:
             return reports_memory[task_id]
-
-        # Generate mock report
-        mock_report = Report(
-            taskId=task_id,
-            title="Research Summary",
-            content="## Mock Report\nThis is a placeholder report.",
-            format="markdown",
-        )
-        return [mock_report]
+        return []
 
 
 @app.get("/api/v1/tasks/{task_id}/metrics", response_model=SystemMetrics)
@@ -936,7 +991,25 @@ async def get_task_metrics(task_id: str):
     except:
         pass
 
-    # Return mock metrics
+    try:
+        task = await get_task_from_redis(task_id)
+        if not task:
+            task = tasks_memory.get(task_id)
+        if task and getattr(task, "metrics", None):
+            task_metrics = task.metrics
+            llm_tokens_used = int(getattr(task_metrics, "llmTokensUsed", 0) or 0)
+            return SystemMetrics(
+                llmCalls=max(0, llm_tokens_used // 1000),
+                searches=int(getattr(task_metrics, "searchCount", 0) or 0),
+                pagesAnalyzed=int(getattr(task_metrics, "webFetchCount", 0) or 0),
+                summaries=int(getattr(task_metrics, "summaryCount", 0) or 0),
+                checkpoints=int(getattr(task_metrics, "checkpointCount", 0) or 0),
+                tokensUsed=llm_tokens_used,
+                estimatedCost=0.0,
+            )
+    except:
+        pass
+
     return SystemMetrics(
         llmCalls=0,
         searches=0,

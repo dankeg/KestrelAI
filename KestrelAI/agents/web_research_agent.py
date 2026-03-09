@@ -8,42 +8,80 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from collections import deque
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any
+
+from KestrelAI.agents.context_manager import ContextManager, TokenBudget, TokenCounter
+from KestrelAI.agents.multi_level_summarizer import MultiLevelSummarizer
+from KestrelAI.graphs.schemas import ResearchActionPlan
+from KestrelAI.memory.hybrid_retriever import HybridRetriever
+from KestrelAI.memory.langchain_retrieval_pipeline import LangChainRetrievalPipeline
+from KestrelAI.memory.vector_store import MemoryStore
+from KestrelAI.shared.models import Task
 
 from .base_agent import AgentState
 from .base_agent import ResearchAgent as BaseResearchAgent
 from .context_builder import ContextBuilder
+from .langchain_action_chains import WebResearchActionChains
+from .langchain_adapter import LangChainChatAdapter
+from .langchain_report_chains import WebResearchLangChainChains
 from .prompt_builder import PromptBuilder
 from .research_config import ResearchConfig
 from .searxng_service import SearXNGService
-from .url_utils import URLFlagManager, clean_url
+from .tool_executor import LangChainToolExecutor
+from .url_utils import URLFlagManager
 
 try:
-    from memory.hybrid_retriever import HybridRetriever
-    from memory.vector_store import MemoryStore
-    from shared.models import Task
-
-    from .context_manager import ContextManager, TokenBudget, TokenCounter
-    from .multi_level_summarizer import MultiLevelSummarizer
-except ImportError:
-    from KestrelAI.agents.context_manager import (
-        ContextManager,
-        TokenBudget,
-        TokenCounter,
-    )
-    from KestrelAI.agents.multi_level_summarizer import MultiLevelSummarizer
-    from KestrelAI.memory.hybrid_retriever import HybridRetriever
-    from KestrelAI.memory.vector_store import MemoryStore
-    from KestrelAI.shared.models import Task
+    from KestrelAI.graphs.subtask_runner import LangGraphSubtaskRunner
+except Exception:  # pragma: no cover - dependency-gated path
+    LangGraphSubtaskRunner = None
 
 logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _resolve_max_context_tokens(config: ResearchConfig | None) -> int:
+    """Resolve max context tokens from config/env with sane bounds."""
+    fallback = 32768
+    raw = None
+    if config is not None:
+        raw = getattr(config, "max_context_tokens", None)
+    if raw is None:
+        raw = os.getenv("MAX_CONTEXT_TOKENS", fallback)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return fallback
+    return max(2048, min(value, 262144))
+
+
+def _timeouts_disabled() -> bool:
+    return os.getenv("GLOBAL_DISABLE_TIMEOUTS", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _env_timeout_seconds(
+    name: str,
+    default: str,
+    *,
+    minimum: float = 1.0,
+) -> float | None:
+    if _timeouts_disabled():
+        return None
+    raw_value = float(os.getenv(name, default))
+    if raw_value <= 0:
+        return None
+    return max(minimum, raw_value)
 
 
 class WebResearchAgent(BaseResearchAgent):
@@ -55,6 +93,15 @@ class WebResearchAgent(BaseResearchAgent):
         super().__init__(agent_id, llm, memory)
         self.config = config or ResearchConfig()
         self.scratchpad = []
+
+        # LangChain adapter for all model interactions.
+        self.langchain_adapter: LangChainChatAdapter | None = None
+        try:
+            self.langchain_adapter = LangChainChatAdapter.from_llm(llm)
+        except Exception as e:
+            raise RuntimeError("LangChain adapter unavailable") from e
+
+        self.subtask_graph_runner = None
 
         # Initialize hybrid retriever
         try:
@@ -80,13 +127,21 @@ class WebResearchAgent(BaseResearchAgent):
         # Initialize prompt builder
         self.prompt_builder = PromptBuilder(self.config)
 
+        # Tooling and retrieval abstractions (LangChain-backed).
+        self.tool_executor: LangChainToolExecutor | None = None
+        self.retrieval_pipeline: LangChainRetrievalPipeline | None = None
+        self.report_chains: WebResearchLangChainChains | None = None
+        self.action_chains: WebResearchActionChains | None = None
+
         # Initialize context management and summarization
         try:
             # Get model name from LLM wrapper if available (for TokenCounter)
             # Note: We pass llm object (not model_name string) to MultiLevelSummarizer
             model_name = getattr(llm, "model", "gemma3:27b")
             self.token_counter = TokenCounter(model_name=model_name)
-            self.token_budget = TokenBudget(max_context=32768)  # Adjust based on model
+            self.token_budget = TokenBudget(
+                max_context=_resolve_max_context_tokens(self.config)
+            )
             self.summarizer = MultiLevelSummarizer(
                 llm=llm,  # Pass the actual llm object, not model_name string
                 token_counter=self.token_counter,
@@ -110,6 +165,43 @@ class WebResearchAgent(BaseResearchAgent):
             self.summarizer = None
             self.context_management_enabled = False
 
+        try:
+            self.tool_executor = LangChainToolExecutor(
+                searxng_service=self.searxng_service,
+                url_flag_manager=self.url_flag_manager,
+                mcp_manager=self.config.mcp_manager,
+                mcp_enabled=lambda: bool(self.config.use_mcp and self.mcp_connected),
+            )
+        except Exception as e:
+            raise RuntimeError("LangChain tool executor unavailable") from e
+
+        try:
+            self.retrieval_pipeline = LangChainRetrievalPipeline(
+                memory_store=memory,
+                hybrid_retriever=(
+                    self.hybrid_retriever if self.hybrid_retrieval_enabled else None
+                ),
+                token_counter=self.token_counter,
+                summarizer=self.summarizer,
+                context_management_enabled=self.context_management_enabled,
+                debug=self.config.debug,
+            )
+        except Exception as e:
+            raise RuntimeError("LangChain retrieval pipeline unavailable") from e
+
+        try:
+            self.report_chains = WebResearchLangChainChains(
+                model=self.langchain_adapter.client
+            )
+        except Exception as e:
+            raise RuntimeError("LangChain report chains unavailable") from e
+        try:
+            self.action_chains = WebResearchActionChains(
+                model=self.langchain_adapter.client
+            )
+        except Exception as e:
+            raise RuntimeError("LangChain action chains unavailable") from e
+
         # Initialize context builder (lazy initialization to avoid forward reference)
         self._context_builder_initialized = False
         self.context_builder = None
@@ -131,86 +223,139 @@ class WebResearchAgent(BaseResearchAgent):
             self.mcp_connected = False
 
     async def run_step(self, task: Task) -> str:
-        """Run one research step"""
-        # Ensure context builder is initialized (lazy initialization)
+        """Run one research step using the LangGraph runtime."""
+        return await self._run_step_langgraph(task)
+
+    async def _run_step_langgraph(self, task: Task) -> str:
+        """LangGraph-driven research loop."""
         if not self._context_builder_initialized:
             self._initialize_context_builder()
 
         state = self._state.setdefault(task.name, AgentState(task_id=task.name))
+        if self.subtask_graph_runner is None:
+            if LangGraphSubtaskRunner is None:
+                raise RuntimeError("LangGraph runner unavailable")
+            self.subtask_graph_runner = LangGraphSubtaskRunner(self)
 
-        for loop_idx in range(self.config.think_loops):
-            # Check for loops before proceeding
-            if state.is_in_loop():
-                if self.config.debug:
-                    print(f"[{task.name}] Detected loop, forcing summarize action")
-                action: Literal[
-                    "think", "search", "mcp_tool", "summarize", "complete"
-                ] = "summarize"
-                plan = {"action": "summarize"}
-            else:
-                # Build context
-                context = self.context_builder.build_context(task, state)
+        return await self.subtask_graph_runner.run(task, state)
 
-                if self.config.debug:
-                    print(f"\n[Loop {loop_idx+1}/{self.config.think_loops}]")
-                    if self.context_management_enabled and self.token_counter:
-                        context_tokens = self.token_counter.count_tokens(context)
-                        print(f"Context: {len(context)} chars, {context_tokens} tokens")
-                    else:
-                        print(f"Context length: {len(context)} chars")
-
-                # Get system prompt based on configuration
-                system_prompt = self.prompt_builder.get_system_prompt()
-
-                plan_raw = self._chat(
-                    [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": context},
-                    ]
-                )
-
-                plan = self._json_from(plan_raw)
-                if not plan:
-                    if self.config.debug:
-                        logger.warning(
-                            f"[WARN] Invalid JSON response, defaulting to think. Response text: {plan_raw}"
-                        )
-                        print("[WARN] Invalid JSON response, defaulting to think")
-                    plan = {"action": "think", "thought": "Processing..."}
-
-                action: Literal[
-                    "think", "search", "mcp_tool", "summarize", "complete"
-                ] = plan.get("action", "think")
-
-            state.action_count += 1
-            state.record_action(action, plan.get("query", ""))
-
-            if self.config.debug:
-                print(f"[{task.name}] Action {state.action_count}: {action}")
-
-            if action == "think":
-                await self._handle_think_action(plan, state)
-            elif action == "search":
-                await self._handle_search_action(plan, state)
-            elif action == "mcp_tool":
-                await self._handle_mcp_tool_action(plan, state)
-            elif action == "summarize":
-                await self._handle_summarize_action(task, state)
-            elif action == "complete":
-                return await self._handle_complete_action(task, state)
-
-            # Create checkpoint periodically
-            if state.action_count % self.config.checkpoint_freq == 0:
-                await self._create_checkpoint(task, state)
-
-        # Final checkpoint and report
+    async def _finalize_run_after_loops(self, task: Task, state: AgentState) -> str:
+        """Finalize run when loop budget is exhausted."""
         if state.action_count % self.config.checkpoint_freq != 0:
             await self._create_checkpoint(task, state)
 
         final_report = await self._generate_final_report(task, state)
+        await self._store_final_report_with_summaries(task, state, final_report)
+        return final_report
 
-        # Store final report in RAG with summaries (same logic as subtask completion)
-        report_id = self._add_to_rag(
+    def _build_step_feedback(self, task: Task, state: AgentState) -> str:
+        """Build a bounded progress update for a single worker step."""
+        feedback = (getattr(state, "last_step_feedback", "") or "").strip()
+        if feedback:
+            return feedback
+
+        recent_history = [str(item).strip() for item in list(state.history)[-3:]]
+        recent_history = [item for item in recent_history if item]
+        if recent_history:
+            return "\n".join(recent_history)
+
+        focus = (state.current_focus or "").strip()
+        if focus:
+            return f"[PROGRESS] Continuing subtask research with focus: {focus}"
+
+        return f"[PROGRESS] Continuing research for: {task.description}"
+
+    def _rag_write_timeout_seconds(self) -> float | None:
+        return _env_timeout_seconds("AGENT_RAG_WRITE_TIMEOUT_SECONDS", "30")
+
+    @staticmethod
+    def _sanitize_intermediate_note(text: str, *, default_prefix: str) -> str:
+        cleaned = re.sub(r"\r\n?", "\n", str(text or "")).strip()
+        if not cleaned:
+            return default_prefix
+
+        cleaned = re.sub(
+            r"(?im)^\s{0,3}(?:#{1,6}\s*)?(?:final report|actionable shortlist|executive summary|summary report)\s*:?.*$",
+            "",
+            cleaned,
+        ).strip()
+        cleaned = re.sub(
+            r"(?is)^\s*(?:okay|here(?:'| i)s|below is|this (?:report|summary)|i found)\b[^\\n]*\n+",
+            "",
+            cleaned,
+        ).strip()
+
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        bullet_lines: list[str] = []
+        for line in lines:
+            normalized = re.sub(r"^\s*(?:[-*•]|\d+\.)\s*", "", line).strip()
+            lowered = normalized.lower()
+            if not normalized:
+                continue
+            if lowered.startswith(
+                (
+                    "verified findings",
+                    "tentative findings",
+                    "open uncertainties",
+                    "next verification steps",
+                )
+            ):
+                continue
+            if "actionable shortlist" in lowered or "final report" in lowered:
+                continue
+            bullet_lines.append(normalized)
+
+        if not bullet_lines:
+            fallback = cleaned[:400].strip()
+            return f"{default_prefix}\n- {fallback}" if fallback else default_prefix
+
+        compact_lines = bullet_lines[:6]
+        if not all(line.startswith("- ") for line in compact_lines):
+            compact_lines = [f"- {line}" for line in compact_lines]
+        return "\n".join(compact_lines)
+
+    async def _add_to_rag_async(
+        self,
+        task: Task,
+        text: str,
+        doc_type: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Persist RAG entries off the event loop to prevent step stalls."""
+        timeout_seconds = self._rag_write_timeout_seconds()
+        try:
+            add_call = asyncio.to_thread(
+                self._add_to_rag,
+                task,
+                text,
+                doc_type,
+                metadata,
+            )
+            if timeout_seconds is None:
+                return await add_call
+            return await asyncio.wait_for(add_call, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "RAG write timed out for task %s (type=%s) after %.1fs; skipping",
+                task.name,
+                doc_type,
+                timeout_seconds,
+            )
+            return ""
+        except Exception as e:
+            logger.warning(
+                "RAG write failed for task %s (type=%s): %s",
+                task.name,
+                doc_type,
+                e,
+            )
+            return ""
+
+    async def _store_final_report_with_summaries(
+        self, task: Task, state: AgentState, final_report: str
+    ) -> str:
+        """Persist final report and hierarchical summaries in RAG."""
+        report_id = await self._add_to_rag_async(
             task,
             final_report,
             "final_report",
@@ -222,20 +367,19 @@ class WebResearchAgent(BaseResearchAgent):
             },
         )
 
-        # Create and store summary hierarchy for final report
         if self.context_management_enabled and self.summarizer:
             try:
-                hierarchy = self.summarizer.create_summary_hierarchy(
-                    final_report, preserve_facts=True
+                hierarchy = await asyncio.to_thread(
+                    self.summarizer.create_summary_hierarchy,
+                    final_report,
+                    preserve_facts=True,
                 )
                 summaries = hierarchy.get("summaries", {})
-
                 for level_name, summary_text in summaries.items():
                     if level_name == "detailed":
                         continue
-
                     layer = "semantic" if level_name in ["medium"] else "summary"
-                    self._add_to_rag(
+                    await self._add_to_rag_async(
                         task,
                         summary_text,
                         f"final_report_{level_name}",
@@ -249,7 +393,16 @@ class WebResearchAgent(BaseResearchAgent):
             except Exception as e:
                 logger.warning(f"Failed to create/store final report summaries: {e}")
 
-        return final_report
+        return report_id
+
+    def _plan_next_action(self, context: str) -> ResearchActionPlan:
+        """Build the next action plan via LangChain structured output."""
+        if self.action_chains is None:
+            raise RuntimeError("LangChain action chains unavailable for planning")
+        return self.action_chains.next_action(
+            system_prompt=self.prompt_builder.get_system_prompt(),
+            context=context,
+        )
 
     def _initialize_context_builder(self):
         """Initialize context builder after all methods are defined (lazy initialization)"""
@@ -273,6 +426,8 @@ class WebResearchAgent(BaseResearchAgent):
             print(f"  Thinking: {thought[:100]}...")
 
         state.history.append(f"[THOUGHT] {thought}")
+        state.last_step_activity = "thinking"
+        state.last_step_feedback = f"[THOUGHT] {thought}"
         state.current_focus = plan.get("direction", state.current_focus)
 
         # Track metrics
@@ -284,23 +439,70 @@ class WebResearchAgent(BaseResearchAgent):
         query = plan.get("query", "").strip()
         if not query:
             state.history.append("[SKIP] Empty search query")
+            state.last_step_activity = "search"
+            state.last_step_feedback = "[SKIP] Empty search query"
             return
+
+        canonical_query = self._canonicalize_query(query)
 
         # Enhanced duplicate detection
-        if query in state.queries or state.repeated_queries.get(query, 0) >= 2:
+        if (
+            canonical_query in state.queries
+            or state.repeated_queries.get(canonical_query, 0) >= 2
+        ):
             state.history.append(f"[SKIP] Already searched: {query}")
+            state.last_step_activity = "search"
+            state.last_step_feedback = f"[SKIP] Already searched: {query}"
             return
 
-        # Execute search
-        search_start = datetime.now()
-        hits = self.searxng_service.search(query)
-        search_time = (datetime.now() - search_start).total_seconds()
+        if self.tool_executor is None:
+            raise RuntimeError("LangChain tool executor unavailable for search")
+
+        search_result = await self.tool_executor.ainvoke("search_web", {"query": query})
+        hits = search_result.get("hits", [])
+        search_time = float(search_result.get("search_time", 0.0))
+
+        state.queries.add(canonical_query)
+        state.search_count += 1
+        self.metrics["total_searches"] += 1
 
         if not hits:
-            state.history.append(f"[NO RESULTS] {query}")
-            return
+            relaxed_query = self._relax_query(query)
+            if relaxed_query:
+                relaxed_canonical = self._canonicalize_query(relaxed_query)
+                if (
+                    relaxed_canonical
+                    and relaxed_canonical != canonical_query
+                    and relaxed_canonical not in state.queries
+                ):
+                    relaxed_result = await self.tool_executor.ainvoke(
+                        "search_web", {"query": relaxed_query}
+                    )
+                    relaxed_hits = relaxed_result.get("hits", [])
+                    relaxed_time = float(relaxed_result.get("search_time", 0.0))
+                    state.queries.add(relaxed_canonical)
+                    state.search_count += 1
+                    self.metrics["total_searches"] += 1
+                    if relaxed_hits:
+                        query = relaxed_query
+                        hits = relaxed_hits
+                        search_time = relaxed_time
 
-        state.queries.add(query)
+            if not hits:
+                state.search_history.append(
+                    {
+                        "timestamp": _now_iso(),
+                        "query": query,
+                        "results_count": 0,
+                        "search_time": search_time,
+                        "results": [],
+                    }
+                )
+                state.history.append(f"[NO RESULTS] {query}")
+                state.last_step_activity = "search"
+                state.last_step_feedback = f"[NO RESULTS] {query}"
+                return
+
         if self.config.debug:
             print(f"  Searching: {query}")
 
@@ -313,63 +515,93 @@ class WebResearchAgent(BaseResearchAgent):
             "results": [],
         }
 
-        search_results = []
-        for hit in hits:
-            # Validate URL before processing
-            clean_href = clean_url(hit["href"])
-            if clean_href is None:
-                # Skip invalid URLs
-                logger.warning(
-                    f"Skipping invalid URL from search results: {hit['href'][:100]}"
-                )
-                continue
+        if not hasattr(state, "snips"):
+            state.snips = deque(maxlen=10)
 
-            body = self.searxng_service.extract_text(clean_href)
-            if body:
+        search_results: list[str] = []
+        formatted_results: list[str] = []
+        for hit in hits:
+            title = str(hit.get("title", ""))
+            url = str(hit.get("url", "")).strip()
+            snippet = str(hit.get("snippet", ""))
+            domain = str(hit.get("domain", "")).strip()
+            source_tier = str(hit.get("source_tier", "")).strip()
+            authority_score = int(hit.get("authority_score", 0) or 0)
+            official_source = bool(hit.get("official_source", False))
+            if snippet:
+                state.snips.append(snippet)
+
+            if bool(hit.get("fetched")):
                 self.metrics["total_web_fetches"] += 1
 
-            # Get/create flag for valid URL
-            url_flag = self.url_flag_manager.get_or_create_flag(clean_href)
-            if url_flag is None:
-                # Should not happen if clean_href is valid, but handle it anyway
-                logger.warning(
-                    f"Failed to create flag for valid URL: {clean_href[:100]}"
-                )
-                continue
-
-            snippet = (
-                f"Title: {hit['title']}\n"
-                f"URL: {url_flag} (see URL reference table)\n"
-                f"Summary: {hit['body'][:200]}\n"
-                f"Content: {body[:500]}"
-            )
-            # Store in a temporary location for processing
-            if not hasattr(state, "snips"):
-                state.snips = deque(maxlen=10)
-            state.snips.append(snippet)
-            search_results.append(hit["title"])
+            search_results.append(title)
+            formatted_results.append(f"{title} ({url})" if url else title)
 
             # Add to search entry (use cleaned URL)
             search_entry["results"].append(
                 {
-                    "title": hit["title"],
-                    "url": clean_href,  # Use cleaned URL
-                    "fetched": bool(body),
+                    "title": title,
+                    "url": url,
+                    "fetched": bool(hit.get("fetched")),
+                    "domain": domain,
+                    "source_tier": source_tier,
+                    "authority_score": authority_score,
+                    "official_source": official_source,
                 }
             )
 
         state.search_history.append(search_entry)
-        state.history.append(f"[SEARCH] {query}\n  Found: {', '.join(search_results)}")
+        history_results = ", ".join(formatted_results[:3]) if formatted_results else ""
+        state.history.append(f"[SEARCH] {query}\n  Found: {history_results}")
+        state.last_step_activity = "search"
+        state.last_step_feedback = f"[SEARCH] {query}\n  Found: {history_results}"
 
         # Track metrics
-        state.search_count += 1
-        self.metrics["total_searches"] += 1
-        self.metrics["total_search_results"] += len(hits)
+        self.metrics["total_search_results"] += len(search_results)
+
+    @staticmethod
+    def _canonicalize_query(query: str) -> str:
+        query = re.sub(r"[^a-zA-Z0-9\s]", " ", query.lower())
+        query = re.sub(r"\s+", " ", query).strip()
+        return query
+
+    @staticmethod
+    def _relax_query(query: str) -> str:
+        tokens = re.findall(r"[a-zA-Z0-9]+", query.lower())
+        if not tokens:
+            return ""
+        stop = {
+            "the",
+            "a",
+            "an",
+            "for",
+            "with",
+            "and",
+            "or",
+            "to",
+            "in",
+            "of",
+            "on",
+            "by",
+            "from",
+            "at",
+            "that",
+            "this",
+            "these",
+            "those",
+            "2026",
+        }
+        filtered = [t for t in tokens if t not in stop]
+        if not filtered:
+            filtered = tokens
+        return " ".join(filtered[:8]).strip()
 
     async def _handle_mcp_tool_action(self, plan: dict, state: AgentState):
         """Handle MCP tool action"""
         if not self.config.use_mcp or not self.mcp_connected:
             state.history.append("[SKIP] MCP not available")
+            state.last_step_activity = "mcp_tool"
+            state.last_step_feedback = "[SKIP] MCP not available"
             return
 
         tool_name = plan.get("tool_name", "").strip()
@@ -377,28 +609,37 @@ class WebResearchAgent(BaseResearchAgent):
 
         if not tool_name:
             state.history.append("[SKIP] No tool name specified")
+            state.last_step_activity = "mcp_tool"
+            state.last_step_feedback = "[SKIP] No tool name specified"
             return
 
         if self.config.debug:
             print(f"  Using MCP tool: {tool_name}")
 
-        # Execute MCP tool
-        try:
-            result = await self.config.mcp_manager.call_tool(tool_name, tool_parameters)
+        if self.tool_executor is None:
+            raise RuntimeError("LangChain tool executor unavailable for MCP calls")
 
-            if result.success:
-                state.history.append(f"[MCP_TOOL] {tool_name}: Success")
-                # Store tool result
-                if not hasattr(state, "snips"):
-                    state.snips = deque(maxlen=10)
-                if result.data:
-                    state.snips.append(
-                        f"MCP Tool Result ({tool_name}):\n{json.dumps(result.data, indent=2)}"
-                    )
-            else:
-                state.history.append(f"[MCP_TOOL] {tool_name}: Failed - {result.error}")
-        except Exception as e:
-            state.history.append(f"[MCP_TOOL] {tool_name}: Error - {str(e)}")
+        result = await self.tool_executor.call_mcp_tool(
+            tool_name=tool_name,
+            tool_parameters=tool_parameters,
+        )
+
+        if result.get("success"):
+            state.history.append(f"[MCP_TOOL] {tool_name}: Success")
+            state.last_step_activity = "mcp_tool"
+            state.last_step_feedback = f"[MCP_TOOL] {tool_name}: Success"
+            if not hasattr(state, "snips"):
+                state.snips = deque(maxlen=10)
+            if result.get("data") is not None:
+                state.snips.append(
+                    f"MCP Tool Result ({tool_name}):\n"
+                    f"{json.dumps(result.get('data'), indent=2)}"
+                )
+        else:
+            error = result.get("error") or "Unknown error"
+            state.history.append(f"[MCP_TOOL] {tool_name}: Failed - {error}")
+            state.last_step_activity = "mcp_tool"
+            state.last_step_feedback = f"[MCP_TOOL] {tool_name}: Failed - {error}"
 
     async def _handle_summarize_action(self, task: Task, state: AgentState):
         """Handle summarize action"""
@@ -407,34 +648,52 @@ class WebResearchAgent(BaseResearchAgent):
 
         # Replace URLs with flags in material before sending to LLM
         material_with_flags, _ = self.url_flag_manager.replace_urls_with_flags(material)
-
-        summary_prompt = """Create concise research notes from the provided material.
-Focus on key findings, data, and sources.
-No commentary or questions.
-When referencing URLs, use the URL flags (e.g., [URL_1], [URL_2]) provided in the URL reference table.
-Do NOT write out full URLs - use the flags instead."""
-
-        # Build user content with URL reference table
-        user_content = f"Task: {task.description}\n\nMaterial:\n{material_with_flags}"
         url_table = self.url_flag_manager.get_url_reference_table()
-        if url_table:
-            user_content += "\n\n" + url_table
 
-        notes = self._chat(
-            [
-                {"role": "system", "content": summary_prompt},
-                {"role": "user", "content": user_content},
-            ]
+        if self.report_chains is None:
+            raise RuntimeError("LangChain report chains are required for summarization")
+        self.metrics["total_llm_calls"] += 1
+        llm_step_timeout_seconds = _env_timeout_seconds(
+            "AGENT_LLM_STEP_TIMEOUT_SECONDS",
+            "45",
         )
+        try:
+            summarize_call = self.report_chains.asummarize_notes(
+                task_description=task.description,
+                material_with_flags=material_with_flags,
+                url_reference_table=url_table,
+            )
+            if llm_step_timeout_seconds is None:
+                notes_with_flags = await summarize_call
+            else:
+                notes_with_flags = await asyncio.wait_for(
+                    summarize_call,
+                    timeout=llm_step_timeout_seconds,
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Summarize action timed out for task %s after %.1fs; using fallback summary",
+                task.name,
+                llm_step_timeout_seconds,
+            )
+            notes_with_flags = material_with_flags[:1200]
 
         # Replace flags back with URLs using the complete flag mapping
         flag_mapping = self.url_flag_manager.flag_to_url.copy()
-        notes = self.url_flag_manager.replace_flags_with_urls(notes, flag_mapping)
+        notes = self.url_flag_manager.replace_flags_with_urls(
+            notes_with_flags, flag_mapping
+        )
+        notes = self._sanitize_intermediate_note(
+            notes,
+            default_prefix="- No concrete evidence extracted yet.",
+        )
 
         state.history.append(f"[SUMMARY] {notes[:200]}...")
+        state.last_step_activity = "summary"
+        state.last_step_feedback = f"[SUMMARY] {notes[:400]}".strip()
 
         # Store summary in RAG with metadata
-        self._add_to_rag(
+        await self._add_to_rag_async(
             task,
             notes,
             "summary",
@@ -460,53 +719,20 @@ Do NOT write out full URLs - use the flags instead."""
             state.history.append(
                 "[SKIP] Complete action only available for subtask agents"
             )
+            state.last_step_activity = "complete"
+            state.last_step_feedback = (
+                "[SKIP] Complete action only available for subtask agents"
+            )
             return await self._generate_final_report(task, state)
 
         completion_reason = "Subtask objectives met"
         state.history.append(f"[COMPLETE] {completion_reason}")
+        state.last_step_activity = "complete"
+        state.last_step_feedback = f"[COMPLETE] {completion_reason}"
 
         # Generate final report for this subtask
         final_report = await self._generate_final_report(task, state)
-
-        # Store final report in RAG with summaries
-        report_id = self._add_to_rag(
-            task,
-            final_report,
-            "final_report",
-            metadata={
-                "layer": "episodic",  # Final reports are detailed
-                "action_count": state.action_count,
-                "importance_score": self._calculate_importance(final_report),
-                "is_final": True,
-            },
-        )
-
-        # Create and store summary hierarchy for final report
-        if self.context_management_enabled and self.summarizer:
-            try:
-                hierarchy = self.summarizer.create_summary_hierarchy(
-                    final_report, preserve_facts=True
-                )
-                summaries = hierarchy.get("summaries", {})
-
-                for level_name, summary_text in summaries.items():
-                    if level_name == "detailed":
-                        continue
-
-                    layer = "semantic" if level_name in ["medium"] else "summary"
-                    self._add_to_rag(
-                        task,
-                        summary_text,
-                        f"final_report_{level_name}",
-                        metadata={
-                            "report_id": report_id,
-                            "layer": layer,
-                            "summary_level": level_name,
-                            "is_final": True,
-                        },
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to create/store final report summaries: {e}")
+        await self._store_final_report_with_summaries(task, state, final_report)
 
         return final_report
 
@@ -532,54 +758,75 @@ Do NOT write out full URLs - use the flags instead."""
 
         # Get the complete flag mapping after processing all texts
         flag_mapping = self.url_flag_manager.flag_to_url.copy()
-
-        checkpoint_prompt = """Create a focused checkpoint summarizing actionable research findings.
-
-Focus on:
-- Specific opportunities, programs, or grants discovered
-- Concrete details: deadlines, requirements, contact information, application links
-- Exact eligibility criteria and application processes
-- Direct links and contact information
-
-When referencing URLs, use the URL flags (e.g., [URL_1], [URL_2]) provided in the URL reference table.
-Do NOT write out full URLs - use the flags instead.
-
-Avoid:
-- Generic advice or recommendations
-- Vague descriptions of databases or search engines
-- Meta-commentary about the research process
-- Placeholder text or template content
-
-Be concise but include all actionable information the user can immediately use."""
-
-        # Build user content with URL reference table
-        user_content = (
-            f"Task: {task.description}\n\n"
-            f"Recent research:\n{recent_context_with_flags}\n\n"
-            f"Previous checkpoint:\n{previous_checkpoint_with_flags or 'None'}"
-        )
         url_table = self.url_flag_manager.get_url_reference_table()
-        if url_table:
-            user_content += "\n\n" + url_table
 
-        checkpoint = self._chat(
-            [
-                {"role": "system", "content": checkpoint_prompt},
-                {"role": "user", "content": user_content},
-            ]
+        if self.report_chains is None:
+            raise RuntimeError("LangChain report chains are required for checkpoints")
+        self.metrics["total_llm_calls"] += 1
+        llm_step_timeout_seconds = _env_timeout_seconds(
+            "AGENT_LLM_STEP_TIMEOUT_SECONDS",
+            "45",
         )
+        checkpoint_used_fallback = False
+        try:
+            checkpoint_call = self.report_chains.acreate_checkpoint(
+                task_description=task.description,
+                recent_context_with_flags=recent_context_with_flags,
+                previous_checkpoint_with_flags=previous_checkpoint_with_flags,
+                url_reference_table=url_table,
+            )
+            if llm_step_timeout_seconds is None:
+                checkpoint_with_flags = await checkpoint_call
+            else:
+                checkpoint_with_flags = await asyncio.wait_for(
+                    checkpoint_call,
+                    timeout=llm_step_timeout_seconds,
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Checkpoint generation timed out for task %s after %.1fs; using fallback checkpoint",
+                task.name,
+                llm_step_timeout_seconds,
+            )
+            checkpoint_used_fallback = True
+            checkpoint_with_flags = (
+                recent_context_with_flags[-1200:]
+                if recent_context_with_flags
+                else "Checkpoint fallback: no recent context available."
+            )
+        except Exception as e:
+            logger.warning(
+                "Checkpoint generation failed for task %s: %s; using fallback checkpoint",
+                task.name,
+                e,
+            )
+            checkpoint_used_fallback = True
+            checkpoint_with_flags = (
+                recent_context_with_flags[-1200:]
+                if recent_context_with_flags
+                else "Checkpoint fallback: no recent context available."
+            )
 
         # Replace flags back with URLs
         checkpoint = self.url_flag_manager.replace_flags_with_urls(
-            checkpoint, flag_mapping
+            checkpoint_with_flags, flag_mapping
+        )
+        checkpoint = self._sanitize_intermediate_note(
+            checkpoint,
+            default_prefix="- No concrete checkpoint evidence available yet.",
         )
 
         # Store checkpoint in state
         state.last_checkpoint = checkpoint
         state.checkpoints.append(checkpoint)
+        state.last_step_activity = "checkpoint"
+        state.last_step_feedback = (
+            f"[CHECKPOINT] Focus: {state.current_focus or 'General research'}\n"
+            f"{checkpoint[:500]}".strip()
+        )
 
         # Store checkpoint in RAG (detailed/episodic layer)
-        checkpoint_id = self._add_to_rag(
+        checkpoint_id = await self._add_to_rag_async(
             task,
             checkpoint,
             "checkpoint",
@@ -595,78 +842,99 @@ Be concise but include all actionable information the user can immediately use."
 
         # Create and store summary hierarchy if context management is enabled
         if self.context_management_enabled and self.summarizer:
-            try:
-                hierarchy = self.summarizer.create_summary_hierarchy(
-                    checkpoint, preserve_facts=True
+            if checkpoint_used_fallback:
+                logger.info(
+                    "Skipping checkpoint hierarchy generation for task %s because checkpoint content used fallback",
+                    task.name,
                 )
-                summaries = hierarchy.get("summaries", {})
-                facts = hierarchy.get("facts")
-
-                # Store summaries at different levels in RAG
-                for level_name, summary_text in summaries.items():
-                    if level_name == "detailed":
-                        continue  # Already stored as checkpoint
-
-                    # Determine layer based on compression level
-                    if level_name in ["medium"]:
-                        layer = "semantic"
-                    elif level_name in ["summary", "executive"]:
-                        layer = "summary"
+            else:
+                checkpoint_hierarchy_timeout_seconds = _env_timeout_seconds(
+                    "AGENT_CHECKPOINT_HIERARCHY_TIMEOUT_SECONDS",
+                    "20",
+                )
+                try:
+                    hierarchy_call = self.summarizer.create_summary_hierarchy_async(
+                        checkpoint,
+                        preserve_facts=True,
+                    )
+                    if checkpoint_hierarchy_timeout_seconds is None:
+                        hierarchy = await hierarchy_call
                     else:
-                        layer = "semantic"
+                        hierarchy = await asyncio.wait_for(
+                            hierarchy_call,
+                            timeout=checkpoint_hierarchy_timeout_seconds,
+                        )
+                    summaries = hierarchy.get("summaries", {})
+                    facts = hierarchy.get("facts")
 
-                    self._add_to_rag(
-                        task,
-                        summary_text,
-                        f"checkpoint_{level_name}",
-                        metadata={
-                            "checkpoint_index": state.checkpoint_count,
-                            "checkpoint_id": checkpoint_id,  # Link to detailed version
-                            "layer": layer,
-                            "summary_level": level_name,
-                            "original_length": len(checkpoint),
-                            "compressed_length": len(summary_text),
-                            "action_count": state.action_count,
-                            "importance_score": self._calculate_importance(checkpoint),
-                        },
-                    )
+                    # Store summaries at different levels in RAG
+                    for level_name, summary_text in summaries.items():
+                        if level_name == "detailed":
+                            continue  # Already stored as checkpoint
 
-                # Store facts separately for quick access
-                if facts and facts.to_text():
-                    self._add_to_rag(
-                        task,
-                        facts.to_text(),
-                        "checkpoint_facts",
-                        metadata={
-                            "checkpoint_index": state.checkpoint_count,
-                            "checkpoint_id": checkpoint_id,
-                            "layer": "facts",
-                            "type": "extracted_facts",
-                        },
-                    )
+                        # Determine layer based on compression level
+                        if level_name in ["medium"]:
+                            layer = "semantic"
+                        elif level_name in ["summary", "executive"]:
+                            layer = "summary"
+                        else:
+                            layer = "semantic"
 
-                # Store in memory for quick access
-                if hasattr(state, "checkpoint_summaries"):
-                    state.checkpoint_summaries[state.checkpoint_count] = {
-                        "checkpoint_id": checkpoint_id,
-                        "hierarchy": hierarchy,
-                    }
-                else:
-                    state.checkpoint_summaries = {
-                        state.checkpoint_count: {
+                        await self._add_to_rag_async(
+                            task,
+                            summary_text,
+                            f"checkpoint_{level_name}",
+                            metadata={
+                                "checkpoint_index": state.checkpoint_count,
+                                "checkpoint_id": checkpoint_id,  # Link to detailed version
+                                "layer": layer,
+                                "summary_level": level_name,
+                                "original_length": len(checkpoint),
+                                "compressed_length": len(summary_text),
+                                "action_count": state.action_count,
+                                "importance_score": self._calculate_importance(
+                                    checkpoint
+                                ),
+                            },
+                        )
+
+                    # Store facts separately for quick access
+                    if facts and facts.to_text():
+                        await self._add_to_rag_async(
+                            task,
+                            facts.to_text(),
+                            "checkpoint_facts",
+                            metadata={
+                                "checkpoint_index": state.checkpoint_count,
+                                "checkpoint_id": checkpoint_id,
+                                "layer": "facts",
+                                "type": "extracted_facts",
+                            },
+                        )
+
+                    # Store in memory for quick access
+                    if hasattr(state, "checkpoint_summaries"):
+                        state.checkpoint_summaries[state.checkpoint_count] = {
                             "checkpoint_id": checkpoint_id,
                             "hierarchy": hierarchy,
                         }
-                    }
+                    else:
+                        state.checkpoint_summaries = {
+                            state.checkpoint_count: {
+                                "checkpoint_id": checkpoint_id,
+                                "hierarchy": hierarchy,
+                            }
+                        }
 
-                if self.config.debug:
-                    logger.debug(
-                        f"Stored checkpoint {state.checkpoint_count} with {len(summaries)} summary levels in RAG"
+                    if self.config.debug:
+                        logger.debug(
+                            f"Stored checkpoint {state.checkpoint_count} with {len(summaries)} summary levels in RAG"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to create/store checkpoint summaries: {e}",
+                        exc_info=True,
                     )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to create/store checkpoint summaries: {e}", exc_info=True
-                )
 
         # Track metrics
         state.checkpoint_count += 1
@@ -698,11 +966,31 @@ Be concise but include all actionable information the user can immediately use."
         """Generate final report from all checkpoints and findings"""
         # Retrieve relevant content from RAG using semantic search
         # Use task description as query to get most relevant information
-        rag_content = self._retrieve_from_rag(
-            task,
-            query=task.description,
-            max_tokens=self.token_budget.rag_content if self.token_budget else None,
+        rag_read_timeout_seconds = _env_timeout_seconds(
+            "AGENT_RAG_READ_TIMEOUT_SECONDS",
+            "20",
         )
+        try:
+            rag_call = asyncio.to_thread(
+                self._retrieve_from_rag,
+                task,
+                task.description,
+                self.token_budget.rag_content if self.token_budget else None,
+            )
+            if rag_read_timeout_seconds is None:
+                rag_content = await rag_call
+            else:
+                rag_content = await asyncio.wait_for(
+                    rag_call,
+                    timeout=rag_read_timeout_seconds,
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "RAG retrieval timed out for task %s after %.1fs; continuing without RAG context",
+                task.name,
+                rag_read_timeout_seconds,
+            )
+            rag_content = ""
 
         # Combine all checkpoints
         all_checkpoints = (
@@ -782,78 +1070,55 @@ Be concise but include all actionable information the user can immediately use."
         # Get the complete flag mapping after processing all texts
         # This ensures we have all flags that were created during processing
         combined_flag_mapping = self.url_flag_manager.flag_to_url.copy()
-
-        final_report_prompt = """Create a focused, actionable research report from these findings.
-
-CRITICAL REQUIREMENTS:
-- Focus on SPECIFIC, ACTIONABLE information that the user can immediately use
-- Include concrete details: exact deadlines, specific requirements, contact information, application links
-- Prioritize CURRENT opportunities (not generic database descriptions)
-- Remove generic advice and focus on specific programs, grants, or opportunities
-- Include exact eligibility requirements, application processes, and deadlines
-- Provide direct links and contact information where available
-
-URL REFERENCING (CRITICAL):
-- When referencing URLs, use the URL flags (e.g., [URL_1], [URL_2]) provided in the URL reference table
-- Do NOT write out full URLs - use the flags instead
-- Format as markdown links: [Link Text]([URL_1]) or just [URL_1] for bare references
-- The URL reference table shows which flag corresponds to which URL
-- This prevents URL corruption and ensures accuracy
-
-CRITICAL: If previous research reports are provided:
-- BUILD UPON the information in previous reports by adding NEW findings, details, or opportunities
-- PRESERVE all specific details from previous reports (deadlines, contact info, requirements, links)
-- EXPAND on previous findings with additional context, related opportunities, or deeper details
-- DO NOT comment on, evaluate, or praise previous reports (e.g., avoid phrases like "excellent list", "great job", "well done")
-- DO NOT provide feedback or suggestions about the format or quality of previous reports
-- DO NOT repeat information verbatim unless adding new context
-- SYNTHESIZE previous findings with new findings into a cohesive, comprehensive report
-- Focus on ADDING VALUE, not evaluating previous work
-
-Structure the report to be:
-- Fact-heavy with specific details and numbers
-- Actionable with clear next steps
-- Well-organized with clear sections
-- Professional but concise
-- Focused on opportunities the user can actually apply to
-- A comprehensive synthesis that builds upon all previous research
-
-Avoid:
-- Generic database descriptions
-- Vague recommendations
-- Placeholder text
-- Overly comprehensive archival content
-- Generic advice that applies to any research topic
-- Meta-commentary about previous reports (e.g., "This is an excellent list", "You've done a great job")
-- Evaluation or feedback about previous reports
-- Repeating previous reports without adding new information
-- Writing out full URLs (use flags instead)
-
-Focus on: Specific programs, exact deadlines, concrete requirements, direct application links, and building upon previous research with new findings."""
-
-        user_content = f"Task: {task.description}\n\n"
-
-        if previous_reports_with_flags:
-            user_content += previous_reports_with_flags + "\n\n"
-
-        user_content += f"Current research checkpoints:\n{checkpoints_with_flags}\n\n"
-        user_content += f"Additional findings:\n{rag_with_flags}"
-
-        # Add URL reference table
         url_table = self.url_flag_manager.get_url_reference_table()
-        if url_table:
-            user_content += "\n\n" + url_table
 
-        final_report = self._chat(
-            [
-                {"role": "system", "content": final_report_prompt},
-                {"role": "user", "content": user_content},
-            ]
+        if self.report_chains is None:
+            raise RuntimeError(
+                "LangChain report chains are required for final report generation"
+            )
+        self.metrics["total_llm_calls"] += 1
+        raw_final_timeout_seconds = float(
+            os.getenv("AGENT_SUBTASK_FINAL_REPORT_TIMEOUT_SECONDS", "180")
         )
+        if _timeouts_disabled():
+            raw_final_timeout_seconds = 0.0
+        try:
+            if raw_final_timeout_seconds <= 0:
+                final_report_with_flags = (
+                    await self.report_chains.agenerate_final_report(
+                        task_description=task.description,
+                        previous_reports_with_flags=previous_reports_with_flags,
+                        checkpoints_with_flags=checkpoints_with_flags,
+                        rag_with_flags=rag_with_flags,
+                        url_reference_table=url_table,
+                    )
+                )
+            else:
+                final_report_with_flags = await asyncio.wait_for(
+                    self.report_chains.agenerate_final_report(
+                        task_description=task.description,
+                        previous_reports_with_flags=previous_reports_with_flags,
+                        checkpoints_with_flags=checkpoints_with_flags,
+                        rag_with_flags=rag_with_flags,
+                        url_reference_table=url_table,
+                    ),
+                    timeout=max(1.0, raw_final_timeout_seconds),
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Subtask final report generation timed out for task %s after %.1fs; using fallback content",
+                task.name,
+                max(0.0, raw_final_timeout_seconds),
+            )
+            final_report_with_flags = (
+                checkpoints_with_flags[-2400:]
+                if checkpoints_with_flags
+                else rag_with_flags[-2400:]
+            ) or "Final report fallback: no checkpoint content available."
 
         # Replace flags back with actual URLs
         final_report = self.url_flag_manager.replace_flags_with_urls(
-            final_report, combined_flag_mapping
+            final_report_with_flags, combined_flag_mapping
         )
 
         return final_report
@@ -861,191 +1126,30 @@ Focus on: Specific programs, exact deadlines, concrete requirements, direct appl
     def _retrieve_from_rag(
         self, task: Task, query: str = None, max_tokens: int = None
     ) -> str:
-        """
-        Retrieve relevant content from RAG using semantic search with hierarchical summary levels.
-
-        Args:
-            task: Task to retrieve content for
-            query: Optional query string for semantic search (defaults to task description)
-            max_tokens: Optional token budget for retrieved content
-
-        Returns:
-            Retrieved content, using appropriate summary level based on token budget
-        """
+        """Retrieve relevant content from RAG via LangChain retrieval pipeline."""
         if max_tokens is None and self.token_budget:
             max_tokens = self.token_budget.rag_content
 
-        # Use task description as query if not provided
         search_query = query or task.description
 
         try:
-            # Use hybrid retrieval if available, otherwise fall back to vector search
-            if self.hybrid_retrieval_enabled and self.hybrid_retriever:
-                # Use hybrid retrieval (vector + BM25)
-                hybrid_results = self.hybrid_retriever.retrieve(
-                    search_query,
-                    k=20,  # Get more results for better filtering
-                    task_name=task.name,
-                    use_hybrid=True,
-                )
+            if self.retrieval_pipeline is None:
+                raise RuntimeError("LangChain retrieval pipeline unavailable")
 
-                # Convert hybrid results to our format
-                task_docs = []
-                for result in hybrid_results:
-                    meta = result.get("metadata", {})
-                    fused_score = result.get("fused_score", result.get("score", 0.0))
-
-                    # FIXED: Don't convert fused_score to distance incorrectly
-                    # fused_score is already a similarity score (higher = better)
-                    # For RRF scores (when only one method finds doc), scores are in [0, ~0.033]
-                    # For weighted scores (both methods), scores are in [0, 1]
-                    #
-                    # The issue: RRF scores are on a different scale than weighted scores
-                    # Converting with 1.0 - score would make RRF results appear as poor matches
-                    #
-                    # Solution: Since we sort by fused_score directly (primary key), we don't
-                    # need to convert to distance for ranking. However, distance is still used
-                    # as a tertiary tie-breaker, so we calculate it in a way that doesn't
-                    # penalize RRF scores unfairly.
-                    #
-                    # For hybrid results, we use fused_score directly for sorting, and set
-                    # distance to a value that reflects the score but doesn't affect primary ranking.
-                    # Since fused_score is the primary sort key, distance only matters for ties.
-
-                    # Calculate distance for tie-breaking only (not for primary ranking)
-                    # Use inverse of normalized score, but since we sort by fused_score first,
-                    # this is only used when fused_scores are equal (rare)
-                    # For RRF scores, we use a normalized version to avoid extreme distances
-                    if fused_score > 1.0:
-                        # Shouldn't happen, but handle edge case
-                        normalized_score = 1.0
-                    elif fused_score > 0.1:
-                        # Likely a weighted score [0.1, 1.0] - use directly
-                        normalized_score = fused_score
-                    else:
-                        # Likely an RRF score [0, 0.1] - normalize to comparable scale
-                        # Map [0, 0.1] to [0, 0.5] so it's not completely dominated
-                        # This is a heuristic - the real fix is sorting by fused_score first
-                        normalized_score = min(0.5, fused_score * 5.0)
-
-                    distance = 1.0 - normalized_score
-
-                    task_docs.append(
-                        {
-                            "content": result["content"],
-                            "metadata": meta,
-                            "distance": distance,  # For backward compatibility and tie-breaking
-                            "layer": meta.get("layer", "episodic"),
-                            "checkpoint_index": meta.get("checkpoint_index", -1),
-                            "fused_score": fused_score,  # PRIMARY: Use this for sorting
-                        }
-                    )
-            else:
-                # Fall back to vector search only
-                results = self.memory.search(
-                    search_query, k=20
-                )  # Get more results, we'll filter by layer
-
-                if (
-                    not results
-                    or not results.get("documents")
-                    or not results["documents"][0]
-                ):
-                    # Fallback to scratchpad if no RAG results
-                    if self.scratchpad:
-                        recent_entries = (
-                            self.scratchpad[-5:]
-                            if len(self.scratchpad) > 5
-                            else self.scratchpad
-                        )
-                        return "\n\n".join(recent_entries)
-                    return "(No previous findings)"
-
-                # Organize results by layer and relevance
-                documents = results["documents"][0]
-                metadatas = (
-                    results["metadatas"][0]
-                    if results.get("metadatas")
-                    else [{}] * len(documents)
-                )
-                distances = (
-                    results["distances"][0]
-                    if results.get("distances")
-                    else [0.0] * len(documents)
-                )
-
-                # Filter to task-specific content
-                task_docs = []
-                for doc, meta, dist in zip(documents, metadatas, distances):
-                    if meta.get("task") == task.name:
-                        task_docs.append(
-                            {
-                                "content": doc,
-                                "metadata": meta,
-                                "distance": dist,
-                                "layer": meta.get("layer", "episodic"),
-                                "checkpoint_index": meta.get("checkpoint_index", -1),
-                            }
-                        )
-
-            if not task_docs:
-                # Fallback to scratchpad
-                if self.scratchpad:
-                    recent_entries = (
-                        self.scratchpad[-5:]
-                        if len(self.scratchpad) > 5
-                        else self.scratchpad
-                    )
-                    return "\n\n".join(recent_entries)
-                return "(No previous findings)"
-
-            # Prioritize by: 1) fused_score (if available), 2) checkpoint_index, 3) distance
-            # Higher fused_score = better, higher checkpoint_index = more recent, lower distance = better
-            # FIXED: Sort by fused_score first (primary), which correctly handles both weighted and RRF scores
-            # fused_score is already a similarity score where higher = better
-            task_docs.sort(
-                key=lambda x: (
-                    x.get(
-                        "fused_score", 0.0
-                    ),  # Primary: use fused_score directly (higher = better)
-                    x["checkpoint_index"],  # Secondary: more recent checkpoints first
-                    -x[
-                        "distance"
-                    ],  # Tertiary: lower distance = better (for tie-breaking)
-                ),
-                reverse=True,  # Sort descending: highest fused_score first
+            self.retrieval_pipeline.hybrid_retriever = (
+                self.hybrid_retriever if self.hybrid_retrieval_enabled else None
             )
-
-            # Select appropriate layer based on token budget
-            if max_tokens and self.context_management_enabled:
-                # Try to retrieve from appropriate summary level
-                selected_docs = self._select_documents_by_budget(task_docs, max_tokens)
-            else:
-                # No budget constraint, use most recent detailed checkpoints
-                selected_docs = [d for d in task_docs if d["layer"] == "episodic"][:5]
-
-            if not selected_docs:
-                selected_docs = task_docs[:5]  # Fallback to top 5
-
-            # Combine retrieved content
-            retrieved_content = "\n\n---\n\n".join(
-                [doc["content"] for doc in selected_docs]
+            self.retrieval_pipeline.context_management_enabled = (
+                self.context_management_enabled
             )
-
-            # If still too long and we have summarization, summarize
-            if max_tokens and self.context_management_enabled and self.summarizer:
-                content_tokens = self.token_counter.count_tokens(retrieved_content)
-                if content_tokens > max_tokens:
-                    summary, level, facts = self.summarizer.create_summary_on_demand(
-                        retrieved_content, max_tokens=max_tokens, preserve_facts=True
-                    )
-                    if self.config.debug:
-                        logger.debug(
-                            f"Summarized retrieved RAG content: {content_tokens} -> {self.token_counter.count_tokens(summary)} tokens (level: {level})"
-                        )
-                    return summary
-
-            return retrieved_content
+            self.retrieval_pipeline.token_counter = self.token_counter
+            self.retrieval_pipeline.summarizer = self.summarizer
+            return self.retrieval_pipeline.retrieve(
+                task_name=task.name,
+                query=search_query,
+                max_tokens=max_tokens,
+                fallback_entries=self.scratchpad,
+            )
 
         except Exception as e:
             logger.warning(
@@ -1061,65 +1165,6 @@ Focus on: Specific programs, exact deadlines, concrete requirements, direct appl
                 )
                 return "\n\n".join(recent_entries)
             return "(No previous findings)"
-
-    def _select_documents_by_budget(
-        self, documents: list[dict], max_tokens: int
-    ) -> list[dict]:
-        """
-        Select documents from appropriate summary levels to fit within token budget.
-        Prioritizes recent detailed content, falls back to summaries if needed.
-        """
-        selected = []
-        tokens_used = 0
-
-        # Group by checkpoint_index to avoid duplicates
-        checkpoint_groups = {}
-        for doc in documents:
-            idx = doc["checkpoint_index"]
-            if idx not in checkpoint_groups:
-                checkpoint_groups[idx] = []
-            checkpoint_groups[idx].append(doc)
-
-        # Sort checkpoints by index (most recent first)
-        sorted_checkpoints = sorted(checkpoint_groups.keys(), reverse=True)
-
-        for checkpoint_idx in sorted_checkpoints:
-            group = checkpoint_groups[checkpoint_idx]
-
-            # Try to get detailed version first
-            detailed = [d for d in group if d["layer"] == "episodic"]
-            if detailed:
-                doc = detailed[0]
-                doc_tokens = self.token_counter.count_tokens(doc["content"])
-                if tokens_used + doc_tokens <= max_tokens:
-                    selected.append(doc)
-                    tokens_used += doc_tokens
-                    continue
-
-            # Try semantic layer (medium summary)
-            semantic = [d for d in group if d["layer"] == "semantic"]
-            if semantic:
-                doc = semantic[0]
-                doc_tokens = self.token_counter.count_tokens(doc["content"])
-                if tokens_used + doc_tokens <= max_tokens:
-                    selected.append(doc)
-                    tokens_used += doc_tokens
-                    continue
-
-            # Try summary layer (compressed)
-            summary = [d for d in group if d["layer"] == "summary"]
-            if summary:
-                doc = summary[0]
-                doc_tokens = self.token_counter.count_tokens(doc["content"])
-                if tokens_used + doc_tokens <= max_tokens:
-                    selected.append(doc)
-                    tokens_used += doc_tokens
-                    continue
-
-            # If we can't fit even the summary, break
-            break
-
-        return selected
 
     def _calculate_importance(self, content: str) -> float:
         """
@@ -1190,22 +1235,21 @@ Focus on: Specific programs, exact deadlines, concrete requirements, direct appl
             if not old_checkpoint_indices:
                 return
 
-            # Search for old checkpoints in RAG
-            results = self.memory.search(f"checkpoint task:{task.name}", k=50)
-
-            if not results or not results.get("documents"):
+            if self.retrieval_pipeline is None:
+                return
+            docs = self.retrieval_pipeline.retrieve_documents(
+                task_name=task.name,
+                query=f"checkpoint task:{task.name}",
+                k=50,
+            )
+            if not docs:
                 return
 
-            documents = results["documents"][0]
-            metadatas = (
-                results["metadatas"][0]
-                if results.get("metadatas")
-                else [{}] * len(documents)
-            )
-            ids = results["ids"][0] if results.get("ids") else []
+            metadatas = [dict(doc.metadata or {}) for doc in docs]
 
             # Find checkpoints that need compression
-            for doc_id, doc, meta in zip(ids, documents, metadatas):
+            for doc in docs:
+                meta = dict(doc.metadata or {})
                 if meta.get("task") != task.name:
                     continue
 
@@ -1248,7 +1292,7 @@ Focus on: Specific programs, exact deadlines, concrete requirements, direct appl
                         if not has_summary:
                             # Create summary version
                             # Get the semantic version to compress further
-                            semantic_doc = doc
+                            semantic_doc = doc.page_content
                             (
                                 summary,
                                 level,
@@ -1260,8 +1304,10 @@ Focus on: Specific programs, exact deadlines, concrete requirements, direct appl
                             )
 
                             # Store summary version
-                            checkpoint_id = meta.get("checkpoint_id", doc_id)
-                            self._add_to_rag(
+                            checkpoint_id = meta.get(
+                                "checkpoint_id", meta.get("doc_id", "")
+                            )
+                            await self._add_to_rag_async(
                                 task,
                                 summary,
                                 "checkpoint_summary_compressed",

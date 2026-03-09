@@ -147,6 +147,59 @@ Alternatively, rather than building locally images are built through Github Acti
 
 After a few minutes, the application will finish building. By default, it launches at `http://localhost:5173/`. Navigate here in a browser, and it's ready to use!
 
+### LangChain/LangGraph validation stack
+
+The default `docker-compose.yml` is now the authoritative LangGraph runtime stack.
+
+To run it:
+
+```bash
+docker compose up --build
+```
+
+By default, backend/agent use your host Ollama/OpenAI-compatible endpoint via `host.docker.internal`.
+If you want the Dockerized Ollama service instead, start with:
+
+```bash
+docker compose --profile docker-ollama up --build
+```
+
+### Model provider compatibility
+
+Kestrel's model adapter now defaults to OpenAI-compatible schema, so it can work with:
+- OpenAI API
+- Ollama's OpenAI-compatible endpoint
+- Other OpenAI-compatible providers (for example vLLM/LM Studio gateways)
+
+Key environment variables:
+- `LLM_PROVIDER` (default: `openai_compatible`; optional: `ollama_native`)
+- `OPENAI_BASE_URL` (for OpenAI-compatible endpoints; example: `http://localhost:11434`)
+- `OPENAI_API_KEY` (required for cloud providers; local gateways can usually use a dummy key)
+- `MODEL_NAME` to select the default model the backend and agent start with
+- `MAX_CONTEXT_TOKENS` to control internal context budgeting
+- Timeout and orchestration tuning are configured directly in `docker-compose.yml`
+- `OLLAMA_BASE_URL` is optional compatibility-only fallback for older local setups
+
+### Local test path
+
+Install the project environment before running tests locally:
+
+```bash
+poetry install --with dev --extras all
+```
+
+Then run tests with either:
+
+```bash
+poetry run pytest
+```
+
+or the category-aware helper:
+
+```bash
+poetry run python tests/run_tests.py unit integration
+```
+
 ## Usage
 
 Using Kestrel is fairly straightforward. Create a new task, define a description for the research agents to base their exploration off of, and provide a time-box. Some examples are provided of tasks Kestrel can perform. 
@@ -195,4 +248,3 @@ For a full list of all authors and contributors, see [the contributors page](htt
 This project is licensed under the **MIT license**.
 
 See [LICENSE](LICENSE) for more information.
-

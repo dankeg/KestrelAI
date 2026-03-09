@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 # Disable ChromaDB telemetry BEFORE importing ChromaDB to prevent telemetry errors
 # This must be set before any ChromaDB imports
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["CHROMA_TELEMETRY_DISABLED"] = "1"
+os.environ[
+    "CHROMA_PRODUCT_TELEMETRY_IMPL"
+] = "chromadb.telemetry.product.noop.NoopProductTelemetry"
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -25,6 +28,13 @@ try:
     from chromadb import PersistentClient  # type: ignore
 except Exception:  # pragma: no cover - handled by fallback
     PersistentClient = None
+
+try:
+    from langchain_core.documents import Document
+    from langchain_core.retrievers import BaseRetriever
+except ImportError:  # pragma: no cover - dependency-gated path
+    Document = None
+    BaseRetriever = None
 
 # Lazy import SentenceTransformer to allow mocking in tests before import
 # This prevents mutex locking errors when tests mock it
@@ -44,6 +54,46 @@ def _get_sentence_transformer():
 # Global lock for SentenceTransformer model loading to prevent concurrent loads
 _model_lock = threading.Lock()
 _shared_model = None
+
+
+if BaseRetriever is not None and Document is not None:
+
+    class _MemoryStoreLangChainRetriever(BaseRetriever):
+        """LangChain retriever facade over MemoryStore search results."""
+
+        memory_store: MemoryStore
+        k: int = 5
+        task_name: Optional[str] = None
+
+        def _get_relevant_documents(self, query: str) -> list[Document]:
+            results = self.memory_store.search(query, k=self.k)
+            if (
+                not results
+                or not results.get("documents")
+                or not results["documents"][0]
+            ):
+                return []
+
+            documents = results["documents"][0]
+            metadatas = (
+                results["metadatas"][0]
+                if results.get("metadatas")
+                else [{}] * len(documents)
+            )
+
+            out: list[Document] = []
+            for doc, meta in zip(documents, metadatas):
+                metadata = dict(meta or {})
+                if self.task_name and metadata.get("task") != self.task_name:
+                    continue
+                out.append(Document(page_content=str(doc), metadata=metadata))
+            return out
+
+        async def _aget_relevant_documents(self, query: str) -> list[Document]:
+            return self._get_relevant_documents(query)
+
+else:  # pragma: no cover - dependency-gated path
+    _MemoryStoreLangChainRetriever = None
 
 
 class _InMemoryCollection:
@@ -213,14 +263,62 @@ class MemoryStore:
             ids=[doc_id], documents=[text], metadatas=[meta], embeddings=[emb_list]
         )
 
-    def search(self, query: str, k: int = 5):
+    def add_document(self, doc_id: str, text: str, meta: dict) -> None:
+        """Convenience alias for adding a document."""
+        self.add(doc_id, text, meta)
+
+    def search(self, query: str, k: int = 5, n_results: int | None = None):
+        """Search vector store with `k` and optional compatibility `n_results`."""
+        requested_k = (
+            int(n_results) if isinstance(n_results, int) and n_results > 0 else int(k)
+        )
+        top_k = self._clamp_query_size(requested_k)
+        if top_k <= 0:
+            return {
+                "ids": [[]],
+                "documents": [[]],
+                "metadatas": [[]],
+                "distances": [[]],
+            }
         # Ensure model is loaded (lazy loading)
         emb = self.model.encode(query)
         # Handle both 1D and 2D arrays from encode()
         if emb.ndim == 2 and emb.shape[0] == 1:
             emb = emb[0]  # Flatten if 2D with single row
         emb_list = emb.tolist()
-        return self.collection.query(query_embeddings=[emb_list], n_results=k)
+        return self.collection.query(query_embeddings=[emb_list], n_results=top_k)
+
+    def _clamp_query_size(self, requested_k: int) -> int:
+        """
+        Clamp query size to current collection cardinality to avoid Chroma warnings
+        about requesting more results than indexed elements.
+        """
+        if requested_k <= 0:
+            return 0
+        try:
+            if hasattr(self.collection, "count"):
+                count = int(self.collection.count())
+            elif hasattr(self.collection, "_docs"):
+                count = len(getattr(self.collection, "_docs", {}))
+            else:
+                count = requested_k
+            if count <= 0:
+                return 0
+            return min(requested_k, count)
+        except Exception:
+            return requested_k
+
+    def as_langchain_retriever(
+        self, *, task_name: str | None = None, k: int = 5
+    ) -> Any | None:
+        """Return a LangChain retriever abstraction for this memory store."""
+        if _MemoryStoreLangChainRetriever is None:
+            return None
+        return _MemoryStoreLangChainRetriever(
+            memory_store=self,
+            k=k,
+            task_name=task_name,
+        )
 
     def delete_all(self) -> None:
         """Delete everything in this collection (but keep the collection)."""

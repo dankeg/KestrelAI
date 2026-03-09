@@ -136,12 +136,24 @@ interface AppSettings {
   ollamaMode: OllamaMode;
   orchestrator: Orchestrator;
   theme: Theme;
+  modelName: string;
+  maxContextTokens: number;
+}
+
+interface AvailableModelsResponse {
+  mode: OllamaMode;
+  host: string;
+  models: string[];
+  selected?: string | null;
+  error?: string | null;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   ollamaMode: "local",
   orchestrator: "kestrel",
   theme: "amber",
+  modelName: "gemma3:12b",
+  maxContextTokens: 32768,
 };
 
 // ==========================
@@ -303,6 +315,17 @@ class KestrelAPI {
     } catch (err) {
       console.warn("Settings POST error:", err);
     }
+  }
+
+  async getAvailableModels(mode?: OllamaMode): Promise<AvailableModelsResponse | null> {
+    try {
+      const query = mode ? `?mode=${mode}` : "";
+      const res = await fetch(`${this.baseURL}/settings/models${query}`);
+      if (res.ok) return await res.json();
+    } catch (err) {
+      console.warn("Settings models GET error:", err);
+    }
+    return null;
   }
 }
 
@@ -670,12 +693,7 @@ function useTaskActivity(taskId: string | null) {
         setActivity(data);
       } catch (err) {
         console.error("Failed to load activity:", err);
-        setActivity([
-          { id: "1", taskId, time: "14:23:12", type: "search", message: "🔍 Searching for information", timestamp: Date.now() },
-          { id: "2", taskId, time: "14:22:45", type: "analysis", message: "🤔 Analyzing findings", timestamp: Date.now() - 27000 },
-          { id: "3", taskId, time: "14:22:10", type: "summary", message: "📝 Creating summary", timestamp: Date.now() - 62000 },
-          { id: "4", taskId, time: "14:21:30", type: "checkpoint", message: "💾 Saving checkpoint", timestamp: Date.now() - 102000 },
-        ]);
+        setActivity([]);
       } finally {
         setIsLoading(false);
       }
@@ -708,11 +726,7 @@ function useSearchHistory(taskId: string | null) {
         setSearches(data);
       } catch (err) {
         console.error("Failed to load search history:", err);
-        setSearches([
-          { id: "1", taskId, time: "14:23:12", query: "Anthropic research grants undergraduate", results: 8, timestamp: Date.now() },
-          { id: "2", taskId, time: "14:22:30", query: "AAAI undergraduate fellowships 2025", results: 12, timestamp: Date.now() - 42000 },
-          { id: "3", taskId, time: "14:21:15", query: "NSF REU AI programs deadline", results: 15, timestamp: Date.now() - 117000 },
-        ]);
+        setSearches([]);
       } finally {
         setIsLoading(false);
       }
@@ -743,38 +757,7 @@ function useReports(taskId: string | null) {
         setReports(data);
       } catch (err) {
         console.error("Failed to load reports:", err);
-        setReports([
-          {
-            id: uid(),
-            taskId: taskId!,
-            timestamp: Date.now(),
-            title: "Research Summary",
-            content: `# Research Summary
-
-## Key Findings
-
-This is a **placeholder report** with *markdown* formatting.
-
-### Important Points
-- First finding with **bold text**
-- Second finding with *italic text*
-- Third finding with a [link](https://example.com)
-
-### Code Example
-\`\`\`python
-def example():
-    return "Hello World"
-\`\`\`
-
-> This is a blockquote with important information
-
----
-
-### Conclusion
-The research has uncovered several important insights that will guide our next steps.`,
-            format: "markdown",
-          },
-        ]);
+        setReports([]);
       } finally {
         setIsLoading(false);
       }
@@ -811,11 +794,13 @@ function useMetrics(taskId: string | null) {
       } catch (err) {
         console.error("Failed to load metrics:", err);
         setMetrics({
-          llmCalls: 128,
-          searches: 42,
-          pagesAnalyzed: 181,
-          summaries: 19,
-          checkpoints: 8,
+          llmCalls: 0,
+          searches: 0,
+          pagesAnalyzed: 0,
+          summaries: 0,
+          checkpoints: 0,
+          tokensUsed: 0,
+          estimatedCost: 0,
         });
       } finally {
         setIsLoading(false);
@@ -876,9 +861,10 @@ function useAppSettings() {
         // First try to get settings from backend
         const backendSettings = await api.getSettings();
         if (backendSettings) {
-          setSettings(backendSettings);
+          const merged = { ...DEFAULT_SETTINGS, ...backendSettings };
+          setSettings(merged);
           // Also save to localStorage as backup
-          localStorage.setItem("kestrel.settings", JSON.stringify(backendSettings));
+          localStorage.setItem("kestrel.settings", JSON.stringify(merged));
         } else {
           // Fallback to localStorage
           const raw = localStorage.getItem("kestrel.settings");
@@ -909,7 +895,12 @@ function useAppSettings() {
   }, []);
 
   const updateSettings = async (patch: Partial<AppSettings>) => {
-    const next = { ...settings, ...patch };
+    const next: AppSettings = { ...settings, ...patch };
+    next.modelName = (next.modelName || DEFAULT_SETTINGS.modelName).trim() || DEFAULT_SETTINGS.modelName;
+    const parsedMaxContext = Number(next.maxContextTokens);
+    next.maxContextTokens = Number.isFinite(parsedMaxContext)
+      ? Math.max(2048, Math.min(262144, Math.round(parsedMaxContext)))
+      : DEFAULT_SETTINGS.maxContextTokens;
     setSettings(next);
     try {
       localStorage.setItem("kestrel.settings", JSON.stringify(next));
@@ -1621,20 +1612,13 @@ function TaskDashboard({
         </div>
 
         {/* System Metrics */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
               <Brain className="w-4 h-4 theme-text-primary-600" />
               <span className="text-2xl font-bold theme-text-primary-700">{metrics.llmCalls}</span>
             </div>
             <div className="text-xs uppercase text-gray-600 font-semibold">LLM Calls</div>
-          </div>
-          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
-            <div className="flex items-center justify-between mb-1">
-              <Search className="w-4 h-4 theme-text-primary-600" />
-              <span className="text-2xl font-bold theme-text-primary-700">{metrics.searches}</span>
-            </div>
-            <div className="text-xs uppercase text-gray-600 font-semibold">Searches</div>
           </div>
           <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
@@ -1648,20 +1632,22 @@ function TaskDashboard({
           <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
               <FileText className="w-4 h-4 theme-text-primary-600" />
-              <span className="text-2xl font-bold theme-text-primary-700">{metrics.summaries}</span>
+              <span className="text-2xl font-bold theme-text-primary-700">
+                {metrics.tokensUsed ?? 0}
+              </span>
             </div>
-            <div className="text-xs uppercase text-gray-600 font-semibold">Summaries</div>
+            <div className="text-xs uppercase text-gray-600 font-semibold">Tokens</div>
           </div>
           <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
               <Save className="w-4 h-4 theme-text-primary-600" />
               <span className="text-2xl font-bold theme-text-primary-700">
-                {metrics.checkpoints}
+                {typeof metrics.estimatedCost === "number"
+                  ? metrics.estimatedCost.toFixed(2)
+                  : "0.00"}
               </span>
             </div>
-            <div className="text-xs uppercase text-gray-600 font-semibold">
-              Checkpoints
-            </div>
+            <div className="text-xs uppercase text-gray-600 font-semibold">Est. Cost</div>
           </div>
         </div>
 
@@ -1679,7 +1665,9 @@ function TaskDashboard({
               </h3>
             </div>
             <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
-              {activity.map((entry) => (
+              {activity.length === 0 ? (
+                <div className="text-sm text-gray-500">No activity yet.</div>
+              ) : activity.map((entry) => (
                 <div
                   key={entry.id}
                   className="flex items-center gap-3 p-2 theme-bg-primary-50 rounded-lg border theme-border-primary-100"
@@ -1702,7 +1690,9 @@ function TaskDashboard({
               </h3>
             </div>
             <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
-              {searches.map((search) => (
+              {searches.length === 0 ? (
+                <div className="text-sm text-gray-500">No searches recorded yet.</div>
+              ) : searches.map((search) => (
                 <div
                   key={search.id}
                   className="flex items-center gap-2 p-2 theme-bg-primary-50 rounded-lg text-xs border theme-border-primary-100"
@@ -1770,11 +1760,19 @@ function SettingsModal({
   onClose,
   settings,
   onChange,
+  availableModels,
+  modelsLoading,
+  modelsError,
+  onRefreshModels,
 }: {
   open: boolean;
   onClose: () => void;
   settings: AppSettings;
   onChange: (patch: Partial<AppSettings>) => void;
+  availableModels: string[];
+  modelsLoading: boolean;
+  modelsError: string | null;
+  onRefreshModels: () => void;
 }) {
   // Close on ESC
   useEffect(() => {
@@ -1909,6 +1907,77 @@ function SettingsModal({
                 </button>
               </div>
             </section>
+
+            {/* Model and context controls */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">Model & Context</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="p-4 rounded-xl border-2 border-gray-200 bg-white">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-semibold text-gray-600 uppercase">
+                      Model Name
+                    </label>
+                    <button
+                      type="button"
+                      onClick={onRefreshModels}
+                      className="px-2 py-1 text-xs rounded border border-gray-300 hover:bg-gray-50"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {availableModels.length > 0 ? (
+                    <select
+                      value={settings.modelName}
+                      onChange={(e) => onChange({ modelName: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-theme-border-primary-500 focus:border-transparent text-sm bg-white"
+                    >
+                      {availableModels.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={settings.modelName}
+                      onChange={(e) => onChange({ modelName: e.target.value })}
+                      placeholder="gemma3:12b"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-theme-border-primary-500 focus:border-transparent text-sm"
+                    />
+                  )}
+                  <p className="mt-2 text-xs text-gray-500">
+                    {modelsLoading
+                      ? "Loading models from Ollama..."
+                      : modelsError
+                        ? `Model discovery error: ${modelsError}`
+                        : "Discovered from current Ollama runtime. Selection is applied before task start."}
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl border-2 border-gray-200 bg-white">
+                  <label className="block text-xs font-semibold text-gray-600 mb-2 uppercase">
+                    Max Context Tokens
+                  </label>
+                  <input
+                    type="number"
+                    min={2048}
+                    max={262144}
+                    step={1024}
+                    value={settings.maxContextTokens}
+                    onChange={(e) =>
+                      onChange({
+                        maxContextTokens: Number(e.target.value || DEFAULT_SETTINGS.maxContextTokens),
+                      })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-theme-border-primary-500 focus:border-transparent text-sm"
+                  />
+                  <p className="mt-2 text-xs text-gray-500">
+                    Controls token budget for retrieval/planning context windows.
+                  </p>
+                </div>
+              </div>
+            </section>
           </div>
 
           {/* Footer */}
@@ -1948,6 +2017,36 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const { settings, updateSettings } = useAppSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  const refreshAvailableModels = async () => {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const response = await api.getAvailableModels(settings.ollamaMode);
+      const models = Array.isArray(response?.models) ? response.models : [];
+      setAvailableModels(models);
+      if (response?.error) {
+        setModelsError(response.error);
+      }
+      if (models.length > 0 && !settings.modelName.trim()) {
+        updateSettings({ modelName: models[0] });
+      }
+    } catch (err: any) {
+      setAvailableModels([]);
+      setModelsError(err?.message || "Failed to load models");
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    refreshAvailableModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen, settings.ollamaMode]);
   
   // Apply theme
   useTheme(settings);
@@ -1961,6 +2060,8 @@ export default function App() {
 
   const handleStartTask = async () => {
     if (!selectedTask) return;
+    // Ensure latest settings are persisted before dispatching start command.
+    await api.saveSettings(settings);
     await persistAndStartTask(selectedTask.id);
   };
 
@@ -2129,6 +2230,10 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         settings={settings}
         onChange={updateSettings}
+        availableModels={availableModels}
+        modelsLoading={modelsLoading}
+        modelsError={modelsError}
+        onRefreshModels={refreshAvailableModels}
       />
     </div>
   );

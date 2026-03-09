@@ -45,10 +45,12 @@ class TestPerformanceRegression:
 
     def test_redis_performance_regression(self, performance_benchmarks):
         """Test Redis performance to prevent regression."""
-        from KestrelAI.shared.redis_utils import get_sync_redis_client
+        from KestrelAI.shared.redis_utils import RedisConfig, get_sync_redis_client
 
         try:
-            client = get_sync_redis_client({"host": "localhost", "port": 6379, "db": 0})
+            client = get_sync_redis_client(
+                RedisConfig(host="localhost", port=6379, db=0)
+            )
 
             # Test ping performance
             start_time = time.time()
@@ -114,38 +116,40 @@ class TestPerformanceRegression:
 
     def test_web_search_performance_regression(self, performance_benchmarks):
         """Test web search performance to prevent regression."""
+        import asyncio
+
+        from KestrelAI.agents.base_agent import AgentState
         from KestrelAI.agents.web_research_agent import WebResearchAgent
 
         mock_llm = Mock()
         mock_memory = Mock()
         agent = WebResearchAgent("test-agent", mock_llm, mock_memory)
 
-        with patch("requests.get") as mock_get:
-            mock_response = Mock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "results": [
-                    {
-                        "title": "Test Result",
-                        "url": "https://example.com",
-                        "content": "Test content",
-                    }
-                ]
-            }
-            mock_get.return_value = mock_response
+        agent.searxng_service.search = Mock(
+            return_value=[
+                {
+                    "title": "Test Result",
+                    "href": "https://example.com",
+                    "body": "Test content",
+                }
+            ]
+        )
+        agent.searxng_service.extract_text = Mock(return_value="Fetched page content")
+        state = AgentState(task_id="performance-test")
+        plan = {"query": "test query"}
 
-            start_time = time.time()
-            results = agent.search_web("test query")
-            search_time = time.time() - start_time
+        start_time = time.time()
+        asyncio.run(agent._handle_search_action(plan, state))
+        search_time = time.time() - start_time
 
-            assert len(results) == 1
-            assert search_time < performance_benchmarks["web_search_time"]
+        assert state.search_count == 1
+        assert search_time < performance_benchmarks["web_search_time"]
 
     def test_orchestrator_performance_regression(
         self, performance_benchmarks, mock_llm, mock_task
     ):
         """Test orchestrator performance to prevent regression."""
-        from KestrelAI.agents.consolidated_orchestrator import ResearchOrchestrator
+        from KestrelAI.agents.research_orchestrator import ResearchOrchestrator
 
         # Test initialization performance
         start_time = time.time()
@@ -161,26 +165,24 @@ class TestPerformanceRegression:
         """Test planning phase performance to prevent regression."""
         import asyncio
 
-        from KestrelAI.agents.consolidated_orchestrator import ResearchOrchestrator
+        from KestrelAI.agents.research_orchestrator import (
+            PlanningPlan,
+            ResearchOrchestrator,
+        )
 
         orchestrator = ResearchOrchestrator([mock_task], mock_llm, profile="kestrel")
 
-        with patch.object(orchestrator.llm, "chat") as mock_chat:
-            mock_chat.return_value = """
-            {
-                "restated_task": "Test restated task",
-                "subtasks": [
+        with patch.object(orchestrator.control_chains, "planning_plan") as mock_plan:
+            mock_plan.return_value = PlanningPlan(
+                restated_task="Test restated task",
+                subtasks=[
                     {
                         "order": 1,
                         "description": "Test subtask 1",
                         "success_criteria": "Test criteria 1",
-                        "status": "pending",
-                        "findings": []
                     }
                 ],
-                "current_subtask_index": 0
-            }
-            """
+            )
 
             async def test_planning():
                 start_time = time.time()
@@ -260,7 +262,7 @@ class TestPerformanceRegression:
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB
 
         # Perform memory-intensive operations
-        from KestrelAI.agents.consolidated_orchestrator import ResearchOrchestrator
+        from KestrelAI.agents.research_orchestrator import ResearchOrchestrator
         from KestrelAI.shared.models import Task, TaskStatus
 
         mock_llm = Mock()

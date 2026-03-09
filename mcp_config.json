@@ -46,12 +46,11 @@
       "tools": ["navigate_to_page", "take_screenshot", "extract_text", "click_element"]
     }
   },
-  "timeout": 30,
+  "timeout": 300,
   "max_retries": 3,
   "enable_logging": true,
   "log_level": "INFO"
 }
-
 
 
 

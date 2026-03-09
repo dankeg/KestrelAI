@@ -139,8 +139,17 @@ class TestContextManagementIntegration:
         self, summarizer, context_manager, token_counter
     ):
         """Test adaptive retrieval based on token budget."""
-        # Skip this test - retrieve_adaptive method doesn't exist yet
-        pytest.skip("retrieve_adaptive method not implemented in MultiLevelSummarizer")
+        summaries = {
+            "detailed": "A" * 400,
+            "medium": "B" * 120,
+            "summary": "C" * 40,
+        }
+
+        content, level = summarizer.retrieve_adaptive(summaries, max_tokens=80)
+
+        assert isinstance(content, str)
+        assert level in summaries
+        assert token_counter.count_tokens(content) <= 80
 
     def test_fact_extraction_and_preservation(
         self, summarizer, mock_llm, token_counter

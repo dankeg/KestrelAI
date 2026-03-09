@@ -31,7 +31,7 @@ except Exception:
 os.environ["PYTHONPATH"] = "/app"
 os.environ["REDIS_HOST"] = "localhost"
 os.environ["REDIS_PORT"] = "6379"
-os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434"
+os.environ["OPENAI_BASE_URL"] = "http://localhost:11434"
 os.environ["SEARXNG_URL"] = "http://localhost:8080"
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["TESTING"] = "1"  # Signal that we're in test mode

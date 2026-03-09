@@ -1,0 +1,353 @@
+{
+  "task_id": "b9cf0347",
+  "prompt": {
+    "id": "authoritative_reu",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budget_minutes": 30
+  },
+  "timings": {
+    "plan_generated_seconds": 15.05
+  },
+  "task": {
+    "id": "b9cf0347",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budgetMinutes": 30,
+    "status": "active",
+    "progress": 0.0,
+    "elapsed": 70,
+    "metrics": {
+      "searchCount": 2,
+      "thinkCount": 2,
+      "summaryCount": 0,
+      "checkpointCount": 0,
+      "webFetchCount": 0,
+      "llmTokensUsed": 0,
+      "errorCount": 0
+    },
+    "research_plan": {
+      "restated_task": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+      "subtasks": [
+        {
+          "order": 1,
+          "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+          "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+          "status": "in_progress",
+          "findings": []
+        },
+        {
+          "order": 2,
+          "description": "For each identified REU program, verify eligibility criteria and deadlines from the program's official website.",
+          "success_criteria": "For each program identified in Step 1, the undergraduate eligibility requirements (e.g., major, GPA, year of study) and the application deadline are confirmed through the program's official website. Documentation of the source (URL) is recorded.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 3,
+          "description": "Assess program relevance to AI and Machine Learning. Determine the primary research focus of each REU program and categorize them based on the degree of alignment with AI and Machine Learning research.",
+          "success_criteria": "Each REU program is categorized as either: \u2018Highly Relevant\u2019 (primary research focus is AI/ML), \u2018Moderately Relevant\u2019 (AI/ML is a component of the research), or \u2018Low Relevance\u2019 (AI/ML is not the primary focus). Justification for the categorization must be documented.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 4,
+          "description": "Identify and document potential uncertainties regarding deadlines or eligibility criteria. Flag any discrepancies or ambiguities found during verification.",
+          "success_criteria": "A list of all uncertainties identified during the verification process is created. This includes, but is not limited to, unclear eligibility requirements, conflicting deadlines, or missing information. The source of the uncertainty is clearly documented.",
+          "status": "pending",
+          "findings": []
+        }
+      ],
+      "current_subtask_index": 0,
+      "created_at": 1773009580751
+    },
+    "createdAt": 1773009566969,
+    "updatedAt": 1773009659053,
+    "config": {}
+  },
+  "plan": {
+    "restated_task": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "subtasks": [
+      {
+        "order": 1,
+        "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+        "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+        "status": "in_progress",
+        "findings": []
+      },
+      {
+        "order": 2,
+        "description": "For each identified REU program, verify eligibility criteria and deadlines from the program's official website.",
+        "success_criteria": "For each program identified in Step 1, the undergraduate eligibility requirements (e.g., major, GPA, year of study) and the application deadline are confirmed through the program's official website. Documentation of the source (URL) is recorded.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 3,
+        "description": "Assess program relevance to AI and Machine Learning. Determine the primary research focus of each REU program and categorize them based on the degree of alignment with AI and Machine Learning research.",
+        "success_criteria": "Each REU program is categorized as either: \u2018Highly Relevant\u2019 (primary research focus is AI/ML), \u2018Moderately Relevant\u2019 (AI/ML is a component of the research), or \u2018Low Relevance\u2019 (AI/ML is not the primary focus). Justification for the categorization must be documented.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 4,
+        "description": "Identify and document potential uncertainties regarding deadlines or eligibility criteria. Flag any discrepancies or ambiguities found during verification.",
+        "success_criteria": "A list of all uncertainties identified during the verification process is created. This includes, but is not limited to, unclear eligibility requirements, conflicting deadlines, or missing information. The source of the uncertainty is clearly documented.",
+        "status": "pending",
+        "findings": []
+      }
+    ],
+    "current_subtask_index": 0,
+    "created_at": 1773009580751
+  },
+  "reports": [
+    {
+      "id": "d3d932ed",
+      "taskId": "b9cf0347",
+      "timestamp": 1773009648509,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[SEARCH] broaden lead discovery across multiple deadline application eligibility\n  Found: Instructions for completing a Discovery Horizons application (https://nserc-crsng.canada.ca/en/instructions-completing-discovery-horizons-application)\n[THOUGHT] Analyzing current information...\n[SEARCH] broaden lead discovery across multiple research projects nsf\n  Found: NSF Collaborative Proposals - Office of Sponsored Projects ... (https://osp.utah.edu/grant-life-cycle/develop-proposal/nsf-collaborative-proposals.php), Sample Broader Impact Statements | Office of Sponsored Programs (https://osp.gatech.edu/sample-broader-impact-statements), Research Partnerships | NSF - U.S. National Science Foundation (https://www.nsf.gov/focus-areas/research-partnerships)\n\n[ORCHESTRATOR FEEDBACK] Continue Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: broaden lead discovery across multiple deadline application eligibility; broaden lead discovery across multiple research projects nsf",
+      "format": "markdown",
+      "metadata": {
+        "progress": 3.3241272502475314,
+        "action_count": 1,
+        "activity_type": "search"
+      }
+    },
+    {
+      "id": "4b9a1ada",
+      "taskId": "b9cf0347",
+      "timestamp": 1773009626760,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n[SEARCH] broaden lead discovery across multiple deadline application eligibility\n  Found: Instructions for completing a Discovery Horizons application (https://nserc-crsng.canada.ca/en/instructions-completing-discovery-horizons-application)\n[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: broaden lead discovery across multiple deadline application eligibility",
+      "format": "markdown",
+      "metadata": {
+        "progress": 2.1158682505289717,
+        "action_count": 1,
+        "activity_type": "thinking"
+      }
+    },
+    {
+      "id": "f8f9411c",
+      "taskId": "b9cf0347",
+      "timestamp": 1773009613268,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n[SEARCH] broaden lead discovery across multiple deadline application eligibility\n  Found: Instructions for completing a Discovery Horizons application (https://nserc-crsng.canada.ca/en/instructions-completing-discovery-horizons-application)\n\n[ORCHESTRATOR GUARD] Continue current subtask. Insufficient exploration depth: actions 2/2, searches 1/1, unique_queries 1/1, checkpoints 0/0, summaries 0, authoritative_results 0/2, official_results 0/1, fetched_results 1/1, unique_domains 1/2, breadth distinct_authoritative_titles 0/3, unique_authoritative_domains 0/3.\n[ORCHESTRATOR FEEDBACK] Switch Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing. Avoid repeating recent queries: broaden lead discovery across multiple deadline application eligibility Transition blocked reason: Insufficient exploration depth: actions 2/2, searches 1/1, unique_queries 1/1, checkpoints 0/0, summaries 0, authoritative_results 0/2, official_results 0/1, fetched_results 1/1, unique_domains 1/2, breadth distinct_authoritative_titles 0/3, unique_authoritative_domains 0/3.",
+      "format": "markdown",
+      "metadata": {
+        "progress": 1.366237825817532,
+        "action_count": 1,
+        "activity_type": "search"
+      }
+    },
+    {
+      "id": "73be3ed5",
+      "taskId": "b9cf0347",
+      "timestamp": 1773009591146,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Run at least 1 more targeted searches tied directly to the current success criteria. Increase search diversity with at least 1 additional distinct query variants. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing.",
+      "format": "markdown",
+      "metadata": {
+        "progress": 0.1372894048690796,
+        "action_count": 1,
+        "activity_type": "thinking"
+      }
+    }
+  ],
+  "export": {
+    "task": {
+      "id": "b9cf0347",
+      "name": "Authoritative REU Validation",
+      "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+      "budgetMinutes": 30,
+      "status": "active",
+      "progress": 0.0,
+      "elapsed": 70,
+      "metrics": {
+        "searchCount": 2,
+        "thinkCount": 2,
+        "summaryCount": 0,
+        "checkpointCount": 0,
+        "webFetchCount": 0,
+        "llmTokensUsed": 0,
+        "errorCount": 0
+      },
+      "research_plan": {
+        "restated_task": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+        "subtasks": [
+          {
+            "order": 1,
+            "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+            "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+            "status": "in_progress",
+            "findings": []
+          },
+          {
+            "order": 2,
+            "description": "For each identified REU program, verify eligibility criteria and deadlines from the program's official website.",
+            "success_criteria": "For each program identified in Step 1, the undergraduate eligibility requirements (e.g., major, GPA, year of study) and the application deadline are confirmed through the program's official website. Documentation of the source (URL) is recorded.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 3,
+            "description": "Assess program relevance to AI and Machine Learning. Determine the primary research focus of each REU program and categorize them based on the degree of alignment with AI and Machine Learning research.",
+            "success_criteria": "Each REU program is categorized as either: \u2018Highly Relevant\u2019 (primary research focus is AI/ML), \u2018Moderately Relevant\u2019 (AI/ML is a component of the research), or \u2018Low Relevance\u2019 (AI/ML is not the primary focus). Justification for the categorization must be documented.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 4,
+            "description": "Identify and document potential uncertainties regarding deadlines or eligibility criteria. Flag any discrepancies or ambiguities found during verification.",
+            "success_criteria": "A list of all uncertainties identified during the verification process is created. This includes, but is not limited to, unclear eligibility requirements, conflicting deadlines, or missing information. The source of the uncertainty is clearly documented.",
+            "status": "pending",
+            "findings": []
+          }
+        ],
+        "current_subtask_index": 0,
+        "created_at": 1773009580751
+      },
+      "createdAt": 1773009566969,
+      "updatedAt": 1773009659053,
+      "config": {}
+    },
+    "activities": [
+      {
+        "id": "4e6bbcb2",
+        "taskId": "b9cf0347",
+        "time": "22:40:48",
+        "type": "search",
+        "message": "\ud83d\udd0d Searching for opportunities",
+        "metadata": {},
+        "timestamp": 1773009648507
+      },
+      {
+        "id": "5d8df7f9",
+        "taskId": "b9cf0347",
+        "time": "22:40:26",
+        "type": "thinking",
+        "message": "\ud83e\udd14 Analyzing findings",
+        "metadata": {},
+        "timestamp": 1773009626758
+      },
+      {
+        "id": "ffa2d405",
+        "taskId": "b9cf0347",
+        "time": "22:40:13",
+        "type": "search",
+        "message": "\ud83d\udd0d Searching for opportunities",
+        "metadata": {},
+        "timestamp": 1773009613265
+      },
+      {
+        "id": "212cd3b5",
+        "taskId": "b9cf0347",
+        "time": "22:39:51",
+        "type": "thinking",
+        "message": "\ud83e\udd14 Analyzing findings",
+        "metadata": {},
+        "timestamp": 1773009591144
+      },
+      {
+        "id": "57cf1ed9",
+        "taskId": "b9cf0347",
+        "time": "22:39:27",
+        "type": "task_start",
+        "message": "\ud83e\udd85 Starting research: Authoritative REU Validation",
+        "metadata": {},
+        "timestamp": 1773009567616
+      }
+    ],
+    "searches": [
+      {
+        "id": "983c3b9a",
+        "taskId": "b9cf0347",
+        "time": "22:40:48",
+        "query": "broaden lead discovery across multiple research projects nsf",
+        "results": 4,
+        "sources": [
+          "orchestrator_search"
+        ],
+        "timestamp": 1773009648509
+      },
+      {
+        "id": "5916191a",
+        "taskId": "b9cf0347",
+        "time": "22:40:13",
+        "query": "broaden lead discovery across multiple deadline application eligibility",
+        "results": 4,
+        "sources": [
+          "orchestrator_search"
+        ],
+        "timestamp": 1773009613267
+      }
+    ],
+    "reports": [
+      {
+        "id": "d3d932ed",
+        "taskId": "b9cf0347",
+        "timestamp": 1773009648509,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[SEARCH] broaden lead discovery across multiple deadline application eligibility\n  Found: Instructions for completing a Discovery Horizons application (https://nserc-crsng.canada.ca/en/instructions-completing-discovery-horizons-application)\n[THOUGHT] Analyzing current information...\n[SEARCH] broaden lead discovery across multiple research projects nsf\n  Found: NSF Collaborative Proposals - Office of Sponsored Projects ... (https://osp.utah.edu/grant-life-cycle/develop-proposal/nsf-collaborative-proposals.php), Sample Broader Impact Statements | Office of Sponsored Programs (https://osp.gatech.edu/sample-broader-impact-statements), Research Partnerships | NSF - U.S. National Science Foundation (https://www.nsf.gov/focus-areas/research-partnerships)\n\n[ORCHESTRATOR FEEDBACK] Continue Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: broaden lead discovery across multiple deadline application eligibility; broaden lead discovery across multiple research projects nsf",
+        "format": "markdown",
+        "metadata": {
+          "progress": 3.3241272502475314,
+          "action_count": 1,
+          "activity_type": "search"
+        }
+      },
+      {
+        "id": "4b9a1ada",
+        "taskId": "b9cf0347",
+        "timestamp": 1773009626760,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n[SEARCH] broaden lead discovery across multiple deadline application eligibility\n  Found: Instructions for completing a Discovery Horizons application (https://nserc-crsng.canada.ca/en/instructions-completing-discovery-horizons-application)\n[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: broaden lead discovery across multiple deadline application eligibility",
+        "format": "markdown",
+        "metadata": {
+          "progress": 2.1158682505289717,
+          "action_count": 1,
+          "activity_type": "thinking"
+        }
+      },
+      {
+        "id": "f8f9411c",
+        "taskId": "b9cf0347",
+        "timestamp": 1773009613268,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n[SEARCH] broaden lead discovery across multiple deadline application eligibility\n  Found: Instructions for completing a Discovery Horizons application (https://nserc-crsng.canada.ca/en/instructions-completing-discovery-horizons-application)\n\n[ORCHESTRATOR GUARD] Continue current subtask. Insufficient exploration depth: actions 2/2, searches 1/1, unique_queries 1/1, checkpoints 0/0, summaries 0, authoritative_results 0/2, official_results 0/1, fetched_results 1/1, unique_domains 1/2, breadth distinct_authoritative_titles 0/3, unique_authoritative_domains 0/3.\n[ORCHESTRATOR FEEDBACK] Switch Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing. Avoid repeating recent queries: broaden lead discovery across multiple deadline application eligibility Transition blocked reason: Insufficient exploration depth: actions 2/2, searches 1/1, unique_queries 1/1, checkpoints 0/0, summaries 0, authoritative_results 0/2, official_results 0/1, fetched_results 1/1, unique_domains 1/2, breadth distinct_authoritative_titles 0/3, unique_authoritative_domains 0/3.",
+        "format": "markdown",
+        "metadata": {
+          "progress": 1.366237825817532,
+          "action_count": 1,
+          "activity_type": "search"
+        }
+      },
+      {
+        "id": "73be3ed5",
+        "taskId": "b9cf0347",
+        "timestamp": 1773009591146,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Run at least 1 more targeted searches tied directly to the current success criteria. Increase search diversity with at least 1 additional distinct query variants. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing.",
+        "format": "markdown",
+        "metadata": {
+          "progress": 0.1372894048690796,
+          "action_count": 1,
+          "activity_type": "thinking"
+        }
+      }
+    ],
+    "exported_at": "2026-03-08T22:41:29.334043"
+  },
+  "quality_signals": {
+    "plan_subtask_count": 4,
+    "plan_has_low_signal_domains": false,
+    "report_has_verified_section": false,
+    "report_has_tentative_section": false,
+    "report_has_uncertainty_section": false,
+    "report_has_next_steps_section": false,
+    "authoritative_link_count": 3,
+    "report_count": 4,
+    "export_has_searches": true,
+    "export_has_reports": true
+  }
+}

@@ -1,0 +1,353 @@
+{
+  "task_id": "0ddfc3fb",
+  "prompt": {
+    "id": "authoritative_reu",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budget_minutes": 30
+  },
+  "timings": {
+    "plan_generated_seconds": 52.19
+  },
+  "task": {
+    "id": "0ddfc3fb",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budgetMinutes": 30,
+    "status": "active",
+    "progress": 0.0,
+    "elapsed": 63,
+    "metrics": {
+      "searchCount": 2,
+      "thinkCount": 2,
+      "summaryCount": 0,
+      "checkpointCount": 0,
+      "webFetchCount": 0,
+      "llmTokensUsed": 0,
+      "errorCount": 0
+    },
+    "research_plan": {
+      "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates in 2024, producing a concise shortlist with verified deadlines and eligibility criteria, clearly noting any uncertainties.",
+      "subtasks": [
+        {
+          "order": 1,
+          "description": "Identify and collect all publicly available NSF REU opportunities related to AI and machine learning for undergraduates in 2024. Focus on official program listings, not just research papers.",
+          "success_criteria": "A list of all identified REU programs, including the program name, institution, and URL. This should include both direct NSF REU listings and links to program websites.",
+          "status": "in_progress",
+          "findings": []
+        },
+        {
+          "order": 2,
+          "description": "For each identified REU opportunity, gather information on eligibility criteria (e.g., major requirements, GPA minimums, citizenship).",
+          "success_criteria": "A table summarizing the eligibility criteria for each identified REU program. Data should be sourced directly from the program website or NSF documentation.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 3,
+          "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+          "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 4,
+          "description": "Assess the relevance of each identified REU opportunity to the core task of AI and machine learning for undergraduates, considering the research focus of the program.",
+          "success_criteria": "A classification of each REU opportunity as \u2018Highly Relevant\u2019, \u2018Relevant\u2019, or \u2018Not Relevant\u2019 based on its alignment with the task\u2019s scope. Justification for each classification should be briefly documented.",
+          "status": "pending",
+          "findings": []
+        }
+      ],
+      "current_subtask_index": 0,
+      "created_at": 1773009394564
+    },
+    "createdAt": 1773009343588,
+    "updatedAt": 1773009457946,
+    "config": {}
+  },
+  "plan": {
+    "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates in 2024, producing a concise shortlist with verified deadlines and eligibility criteria, clearly noting any uncertainties.",
+    "subtasks": [
+      {
+        "order": 1,
+        "description": "Identify and collect all publicly available NSF REU opportunities related to AI and machine learning for undergraduates in 2024. Focus on official program listings, not just research papers.",
+        "success_criteria": "A list of all identified REU programs, including the program name, institution, and URL. This should include both direct NSF REU listings and links to program websites.",
+        "status": "in_progress",
+        "findings": []
+      },
+      {
+        "order": 2,
+        "description": "For each identified REU opportunity, gather information on eligibility criteria (e.g., major requirements, GPA minimums, citizenship).",
+        "success_criteria": "A table summarizing the eligibility criteria for each identified REU program. Data should be sourced directly from the program website or NSF documentation.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 3,
+        "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+        "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 4,
+        "description": "Assess the relevance of each identified REU opportunity to the core task of AI and machine learning for undergraduates, considering the research focus of the program.",
+        "success_criteria": "A classification of each REU opportunity as \u2018Highly Relevant\u2019, \u2018Relevant\u2019, or \u2018Not Relevant\u2019 based on its alignment with the task\u2019s scope. Justification for each classification should be briefly documented.",
+        "status": "pending",
+        "findings": []
+      }
+    ],
+    "current_subtask_index": 0,
+    "created_at": 1773009394564
+  },
+  "reports": [
+    {
+      "id": "6041a59f",
+      "taskId": "0ddfc3fb",
+      "timestamp": 1773009447389,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[SEARCH] publicly available nsf reu to ai machine in\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF REU: Information for Faculty - NSF Research Experiences for \u2026 (https://www.nsf.gov/crssprgm/reu/faculty.jsp), NSF REU Site: Trustworthy AI | Golisano College of Computing ... (https://www.rit.edu/computing/trustworthy-ai)\n[THOUGHT] Analyzing current information...\n[SEARCH] publicly available nsf reu to ai machine in official source\n  Found: NCSA Awarded Funding to Continue AI-focused NSF REU Program (https://www.ncsa.illinois.edu/2025/02/20/ncsa-awarded-funding-to-continue-ai-focused-nsf-reu-program/), terminology - Publicly available but privately owned - English \u2026 (https://english.stackexchange.com/questions/380370/publicly-available-but-privately-owned)\n\n[ORCHESTRATOR FEEDBACK] Search for \"NSF REU AI Machine Learning 2024\" on the NSF website. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: publicly available nsf reu to ai machine in; publicly available nsf reu to ai machine in official source",
+      "format": "markdown",
+      "metadata": {
+        "progress": 2.9326327111985946,
+        "action_count": 1,
+        "activity_type": "search"
+      }
+    },
+    {
+      "id": "6494fdef",
+      "taskId": "0ddfc3fb",
+      "timestamp": 1773009429960,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n[SEARCH] publicly available nsf reu to ai machine in\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF REU: Information for Faculty - NSF Research Experiences for \u2026 (https://www.nsf.gov/crssprgm/reu/faculty.jsp), NSF REU Site: Trustworthy AI | Golisano College of Computing ... (https://www.rit.edu/computing/trustworthy-ai)\n[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: publicly available nsf reu to ai machine in",
+      "format": "markdown",
+      "metadata": {
+        "progress": 1.9643011093139646,
+        "action_count": 1,
+        "activity_type": "thinking"
+      }
+    },
+    {
+      "id": "9364a55f",
+      "taskId": "0ddfc3fb",
+      "timestamp": 1773009416627,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n[SEARCH] publicly available nsf reu to ai machine in\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF REU: Information for Faculty - NSF Research Experiences for \u2026 (https://www.nsf.gov/crssprgm/reu/faculty.jsp), NSF REU Site: Trustworthy AI | Golisano College of Computing ... (https://www.rit.edu/computing/trustworthy-ai)\n\n[ORCHESTRATOR FEEDBACK] {\"feedback\": \"\"} Avoid repeating recent queries: publicly available nsf reu to ai machine in",
+      "format": "markdown",
+      "metadata": {
+        "progress": 1.223649091190762,
+        "action_count": 1,
+        "activity_type": "search"
+      }
+    },
+    {
+      "id": "1e02b08a",
+      "taskId": "0ddfc3fb",
+      "timestamp": 1773009398115,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Run at least 1 more targeted searches tied directly to the current success criteria. Increase search diversity with at least 1 additional distinct query variants. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing.",
+      "format": "markdown",
+      "metadata": {
+        "progress": 0.19522147708468968,
+        "action_count": 1,
+        "activity_type": "thinking"
+      }
+    }
+  ],
+  "export": {
+    "task": {
+      "id": "0ddfc3fb",
+      "name": "Authoritative REU Validation",
+      "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+      "budgetMinutes": 30,
+      "status": "active",
+      "progress": 0.0,
+      "elapsed": 63,
+      "metrics": {
+        "searchCount": 2,
+        "thinkCount": 2,
+        "summaryCount": 0,
+        "checkpointCount": 0,
+        "webFetchCount": 0,
+        "llmTokensUsed": 0,
+        "errorCount": 0
+      },
+      "research_plan": {
+        "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates in 2024, producing a concise shortlist with verified deadlines and eligibility criteria, clearly noting any uncertainties.",
+        "subtasks": [
+          {
+            "order": 1,
+            "description": "Identify and collect all publicly available NSF REU opportunities related to AI and machine learning for undergraduates in 2024. Focus on official program listings, not just research papers.",
+            "success_criteria": "A list of all identified REU programs, including the program name, institution, and URL. This should include both direct NSF REU listings and links to program websites.",
+            "status": "in_progress",
+            "findings": []
+          },
+          {
+            "order": 2,
+            "description": "For each identified REU opportunity, gather information on eligibility criteria (e.g., major requirements, GPA minimums, citizenship).",
+            "success_criteria": "A table summarizing the eligibility criteria for each identified REU program. Data should be sourced directly from the program website or NSF documentation.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 3,
+            "description": "Broaden lead discovery across multiple authoritative program sources instead of focusing on a single incidental page.",
+            "success_criteria": "Identify multiple distinct opportunities or program leads from official program pages, .gov, .edu, or primary organization sources, and note which leads warrant deeper verification.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 4,
+            "description": "Assess the relevance of each identified REU opportunity to the core task of AI and machine learning for undergraduates, considering the research focus of the program.",
+            "success_criteria": "A classification of each REU opportunity as \u2018Highly Relevant\u2019, \u2018Relevant\u2019, or \u2018Not Relevant\u2019 based on its alignment with the task\u2019s scope. Justification for each classification should be briefly documented.",
+            "status": "pending",
+            "findings": []
+          }
+        ],
+        "current_subtask_index": 0,
+        "created_at": 1773009394564
+      },
+      "createdAt": 1773009343588,
+      "updatedAt": 1773009457946,
+      "config": {}
+    },
+    "activities": [
+      {
+        "id": "33ee06de",
+        "taskId": "0ddfc3fb",
+        "time": "22:37:27",
+        "type": "search",
+        "message": "\ud83d\udd0d Searching for opportunities",
+        "metadata": {},
+        "timestamp": 1773009447386
+      },
+      {
+        "id": "47aaaba1",
+        "taskId": "0ddfc3fb",
+        "time": "22:37:09",
+        "type": "thinking",
+        "message": "\ud83e\udd14 Analyzing findings",
+        "metadata": {},
+        "timestamp": 1773009429956
+      },
+      {
+        "id": "34e6e8c7",
+        "taskId": "0ddfc3fb",
+        "time": "22:36:56",
+        "type": "search",
+        "message": "\ud83d\udd0d Searching for opportunities",
+        "metadata": {},
+        "timestamp": 1773009416625
+      },
+      {
+        "id": "b9149ed6",
+        "taskId": "0ddfc3fb",
+        "time": "22:36:38",
+        "type": "thinking",
+        "message": "\ud83e\udd14 Analyzing findings",
+        "metadata": {},
+        "timestamp": 1773009398113
+      },
+      {
+        "id": "e4fba7e8",
+        "taskId": "0ddfc3fb",
+        "time": "22:36:13",
+        "type": "task_start",
+        "message": "\ud83e\udd85 Starting research: Authoritative REU Validation",
+        "metadata": {},
+        "timestamp": 1773009373534
+      }
+    ],
+    "searches": [
+      {
+        "id": "baf798f3",
+        "taskId": "0ddfc3fb",
+        "time": "22:37:27",
+        "query": "publicly available nsf reu to ai machine in official source",
+        "results": 4,
+        "sources": [
+          "orchestrator_search"
+        ],
+        "timestamp": 1773009447388
+      },
+      {
+        "id": "8bbdcd9a",
+        "taskId": "0ddfc3fb",
+        "time": "22:36:56",
+        "query": "publicly available nsf reu to ai machine in",
+        "results": 4,
+        "sources": [
+          "orchestrator_search"
+        ],
+        "timestamp": 1773009416626
+      }
+    ],
+    "reports": [
+      {
+        "id": "6041a59f",
+        "taskId": "0ddfc3fb",
+        "timestamp": 1773009447389,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[SEARCH] publicly available nsf reu to ai machine in\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF REU: Information for Faculty - NSF Research Experiences for \u2026 (https://www.nsf.gov/crssprgm/reu/faculty.jsp), NSF REU Site: Trustworthy AI | Golisano College of Computing ... (https://www.rit.edu/computing/trustworthy-ai)\n[THOUGHT] Analyzing current information...\n[SEARCH] publicly available nsf reu to ai machine in official source\n  Found: NCSA Awarded Funding to Continue AI-focused NSF REU Program (https://www.ncsa.illinois.edu/2025/02/20/ncsa-awarded-funding-to-continue-ai-focused-nsf-reu-program/), terminology - Publicly available but privately owned - English \u2026 (https://english.stackexchange.com/questions/380370/publicly-available-but-privately-owned)\n\n[ORCHESTRATOR FEEDBACK] Search for \"NSF REU AI Machine Learning 2024\" on the NSF website. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: publicly available nsf reu to ai machine in; publicly available nsf reu to ai machine in official source",
+        "format": "markdown",
+        "metadata": {
+          "progress": 2.9326327111985946,
+          "action_count": 1,
+          "activity_type": "search"
+        }
+      },
+      {
+        "id": "6494fdef",
+        "taskId": "0ddfc3fb",
+        "timestamp": 1773009429960,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n[SEARCH] publicly available nsf reu to ai machine in\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF REU: Information for Faculty - NSF Research Experiences for \u2026 (https://www.nsf.gov/crssprgm/reu/faculty.jsp), NSF REU Site: Trustworthy AI | Golisano College of Computing ... (https://www.rit.edu/computing/trustworthy-ai)\n[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: publicly available nsf reu to ai machine in",
+        "format": "markdown",
+        "metadata": {
+          "progress": 1.9643011093139646,
+          "action_count": 1,
+          "activity_type": "thinking"
+        }
+      },
+      {
+        "id": "9364a55f",
+        "taskId": "0ddfc3fb",
+        "timestamp": 1773009416627,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n[SEARCH] publicly available nsf reu to ai machine in\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF REU: Information for Faculty - NSF Research Experiences for \u2026 (https://www.nsf.gov/crssprgm/reu/faculty.jsp), NSF REU Site: Trustworthy AI | Golisano College of Computing ... (https://www.rit.edu/computing/trustworthy-ai)\n\n[ORCHESTRATOR FEEDBACK] {\"feedback\": \"\"} Avoid repeating recent queries: publicly available nsf reu to ai machine in",
+        "format": "markdown",
+        "metadata": {
+          "progress": 1.223649091190762,
+          "action_count": 1,
+          "activity_type": "search"
+        }
+      },
+      {
+        "id": "1e02b08a",
+        "taskId": "0ddfc3fb",
+        "timestamp": 1773009398115,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Run at least 1 more targeted searches tied directly to the current success criteria. Increase search diversity with at least 1 additional distinct query variants. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing.",
+        "format": "markdown",
+        "metadata": {
+          "progress": 0.19522147708468968,
+          "action_count": 1,
+          "activity_type": "thinking"
+        }
+      }
+    ],
+    "exported_at": "2026-03-08T22:37:48.372779"
+  },
+  "quality_signals": {
+    "plan_subtask_count": 4,
+    "plan_has_low_signal_domains": false,
+    "report_has_verified_section": false,
+    "report_has_tentative_section": false,
+    "report_has_uncertainty_section": false,
+    "report_has_next_steps_section": false,
+    "authoritative_link_count": 4,
+    "report_count": 4,
+    "export_has_searches": true,
+    "export_has_reports": true
+  }
+}

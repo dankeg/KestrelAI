@@ -1,0 +1,307 @@
+{
+  "task_id": "c850a37f",
+  "prompt": {
+    "id": "authoritative_reu",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budget_minutes": 30
+  },
+  "timings": {
+    "plan_generated_seconds": 22.08
+  },
+  "task": {
+    "id": "c850a37f",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budgetMinutes": 30,
+    "status": "active",
+    "progress": 0.0,
+    "elapsed": 43,
+    "metrics": {
+      "searchCount": 1,
+      "thinkCount": 2,
+      "summaryCount": 0,
+      "checkpointCount": 0,
+      "webFetchCount": 0,
+      "llmTokensUsed": 0,
+      "errorCount": 0
+    },
+    "research_plan": {
+      "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates for the 2025 academic year, producing a concise shortlist with verified deadlines and eligibility criteria, and clearly labeling any uncertainties.",
+      "subtasks": [
+        {
+          "order": 1,
+          "description": "Discover relevant NSF REU programs in AI and machine learning for undergraduates.",
+          "success_criteria": "Collect a list of at least 10 distinct NSF REU programs offering AI or machine learning research opportunities for undergraduates, noting the institution hosting the REU.",
+          "status": "in_progress",
+          "findings": []
+        },
+        {
+          "order": 2,
+          "description": "Verify Program Details \u2013 Deadlines and Eligibility",
+          "success_criteria": "For each identified REU program, determine the official application deadline and confirm eligibility criteria (e.g., student level, citizenship, academic requirements) using the NSF website or the program's official website. Document the source of each piece of information.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 3,
+          "description": "Cross-Reference and Deduplication of Opportunities",
+          "success_criteria": "Identify and eliminate duplicate REU opportunities from the initial list. Prioritize opportunities based on the clarity and authority of the source information.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 4,
+          "description": "Assess Program Relevance to AI/ML",
+          "success_criteria": "For the remaining opportunities, evaluate the degree to which the research aligns with AI and machine learning, justifying the inclusion or exclusion of each program based on its stated research focus.",
+          "status": "pending",
+          "findings": []
+        }
+      ],
+      "current_subtask_index": 0,
+      "created_at": 1773009696959
+    },
+    "createdAt": 1773009681681,
+    "updatedAt": 1773009746622,
+    "config": {}
+  },
+  "plan": {
+    "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates for the 2025 academic year, producing a concise shortlist with verified deadlines and eligibility criteria, and clearly labeling any uncertainties.",
+    "subtasks": [
+      {
+        "order": 1,
+        "description": "Discover relevant NSF REU programs in AI and machine learning for undergraduates.",
+        "success_criteria": "Collect a list of at least 10 distinct NSF REU programs offering AI or machine learning research opportunities for undergraduates, noting the institution hosting the REU.",
+        "status": "in_progress",
+        "findings": []
+      },
+      {
+        "order": 2,
+        "description": "Verify Program Details \u2013 Deadlines and Eligibility",
+        "success_criteria": "For each identified REU program, determine the official application deadline and confirm eligibility criteria (e.g., student level, citizenship, academic requirements) using the NSF website or the program's official website. Document the source of each piece of information.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 3,
+        "description": "Cross-Reference and Deduplication of Opportunities",
+        "success_criteria": "Identify and eliminate duplicate REU opportunities from the initial list. Prioritize opportunities based on the clarity and authority of the source information.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 4,
+        "description": "Assess Program Relevance to AI/ML",
+        "success_criteria": "For the remaining opportunities, evaluate the degree to which the research aligns with AI and machine learning, justifying the inclusion or exclusion of each program based on its stated research focus.",
+        "status": "pending",
+        "findings": []
+      }
+    ],
+    "current_subtask_index": 0,
+    "created_at": 1773009696959
+  },
+  "reports": [
+    {
+      "id": "89ab08bb",
+      "taskId": "c850a37f",
+      "timestamp": 1773009736086,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n[SEARCH] relevant nsf reu ai deadline application eligibility\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), Application \u2013 REU: AI, Data Analytics, and Mixed Reality for ... (https://reuaihealth.wp.txstate.edu/application/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: relevant nsf reu ai deadline application eligibility",
+      "format": "markdown",
+      "metadata": {
+        "progress": 1.817616038852268,
+        "action_count": 1,
+        "activity_type": "thinking"
+      }
+    },
+    {
+      "id": "73db0f81",
+      "taskId": "c850a37f",
+      "timestamp": 1773009722963,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n[SEARCH] relevant nsf reu ai deadline application eligibility\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), Application \u2013 REU: AI, Data Analytics, and Mixed Reality for ... (https://reuaihealth.wp.txstate.edu/application/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n\n[ORCHESTRATOR FEEDBACK] Continue. Avoid repeating recent queries: relevant nsf reu ai deadline application eligibility",
+      "format": "markdown",
+      "metadata": {
+        "progress": 1.088544938299391,
+        "action_count": 1,
+        "activity_type": "search"
+      }
+    },
+    {
+      "id": "1740b742",
+      "taskId": "c850a37f",
+      "timestamp": 1773009705696,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Run at least 1 more targeted searches tied directly to the current success criteria. Increase search diversity with at least 1 additional distinct query variants. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing.",
+      "format": "markdown",
+      "metadata": {
+        "progress": 0.12929264704386392,
+        "action_count": 1,
+        "activity_type": "thinking"
+      }
+    }
+  ],
+  "export": {
+    "task": {
+      "id": "c850a37f",
+      "name": "Authoritative REU Validation",
+      "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+      "budgetMinutes": 30,
+      "status": "active",
+      "progress": 0.0,
+      "elapsed": 43,
+      "metrics": {
+        "searchCount": 1,
+        "thinkCount": 2,
+        "summaryCount": 0,
+        "checkpointCount": 0,
+        "webFetchCount": 0,
+        "llmTokensUsed": 0,
+        "errorCount": 0
+      },
+      "research_plan": {
+        "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates for the 2025 academic year, producing a concise shortlist with verified deadlines and eligibility criteria, and clearly labeling any uncertainties.",
+        "subtasks": [
+          {
+            "order": 1,
+            "description": "Discover relevant NSF REU programs in AI and machine learning for undergraduates.",
+            "success_criteria": "Collect a list of at least 10 distinct NSF REU programs offering AI or machine learning research opportunities for undergraduates, noting the institution hosting the REU.",
+            "status": "in_progress",
+            "findings": []
+          },
+          {
+            "order": 2,
+            "description": "Verify Program Details \u2013 Deadlines and Eligibility",
+            "success_criteria": "For each identified REU program, determine the official application deadline and confirm eligibility criteria (e.g., student level, citizenship, academic requirements) using the NSF website or the program's official website. Document the source of each piece of information.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 3,
+            "description": "Cross-Reference and Deduplication of Opportunities",
+            "success_criteria": "Identify and eliminate duplicate REU opportunities from the initial list. Prioritize opportunities based on the clarity and authority of the source information.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 4,
+            "description": "Assess Program Relevance to AI/ML",
+            "success_criteria": "For the remaining opportunities, evaluate the degree to which the research aligns with AI and machine learning, justifying the inclusion or exclusion of each program based on its stated research focus.",
+            "status": "pending",
+            "findings": []
+          }
+        ],
+        "current_subtask_index": 0,
+        "created_at": 1773009696959
+      },
+      "createdAt": 1773009681681,
+      "updatedAt": 1773009746622,
+      "config": {}
+    },
+    "activities": [
+      {
+        "id": "b6e7d35d",
+        "taskId": "c850a37f",
+        "time": "22:42:16",
+        "type": "thinking",
+        "message": "\ud83e\udd14 Analyzing findings",
+        "metadata": {},
+        "timestamp": 1773009736084
+      },
+      {
+        "id": "25a637c7",
+        "taskId": "c850a37f",
+        "time": "22:42:02",
+        "type": "search",
+        "message": "\ud83d\udd0d Searching for opportunities",
+        "metadata": {},
+        "timestamp": 1773009722960
+      },
+      {
+        "id": "a302643f",
+        "taskId": "c850a37f",
+        "time": "22:41:45",
+        "type": "thinking",
+        "message": "\ud83e\udd14 Analyzing findings",
+        "metadata": {},
+        "timestamp": 1773009705694
+      },
+      {
+        "id": "ff4105c8",
+        "taskId": "c850a37f",
+        "time": "22:41:22",
+        "type": "task_start",
+        "message": "\ud83e\udd85 Starting research: Authoritative REU Validation",
+        "metadata": {},
+        "timestamp": 1773009682331
+      }
+    ],
+    "searches": [
+      {
+        "id": "28cca005",
+        "taskId": "c850a37f",
+        "time": "22:42:02",
+        "query": "relevant nsf reu ai deadline application eligibility",
+        "results": 4,
+        "sources": [
+          "orchestrator_search"
+        ],
+        "timestamp": 1773009722962
+      }
+    ],
+    "reports": [
+      {
+        "id": "89ab08bb",
+        "taskId": "c850a37f",
+        "timestamp": 1773009736086,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n[SEARCH] relevant nsf reu ai deadline application eligibility\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), Application \u2013 REU: AI, Data Analytics, and Mixed Reality for ... (https://reuaihealth.wp.txstate.edu/application/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: relevant nsf reu ai deadline application eligibility",
+        "format": "markdown",
+        "metadata": {
+          "progress": 1.817616038852268,
+          "action_count": 1,
+          "activity_type": "thinking"
+        }
+      },
+      {
+        "id": "73db0f81",
+        "taskId": "c850a37f",
+        "timestamp": 1773009722963,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n[SEARCH] relevant nsf reu ai deadline application eligibility\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), Application \u2013 REU: AI, Data Analytics, and Mixed Reality for ... (https://reuaihealth.wp.txstate.edu/application/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n\n[ORCHESTRATOR FEEDBACK] Continue. Avoid repeating recent queries: relevant nsf reu ai deadline application eligibility",
+        "format": "markdown",
+        "metadata": {
+          "progress": 1.088544938299391,
+          "action_count": 1,
+          "activity_type": "search"
+        }
+      },
+      {
+        "id": "1740b742",
+        "taskId": "c850a37f",
+        "timestamp": 1773009705696,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[THOUGHT] Analyzing current information...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Run at least 1 more targeted searches tied directly to the current success criteria. Increase search diversity with at least 1 additional distinct query variants. Find at least 2 more authoritative sources (.gov, .edu, official program pages, or primary organizations). Verify key claims directly on an official source before advancing.",
+        "format": "markdown",
+        "metadata": {
+          "progress": 0.12929264704386392,
+          "action_count": 1,
+          "activity_type": "thinking"
+        }
+      }
+    ],
+    "exported_at": "2026-03-08T22:44:22.327520"
+  },
+  "quality_signals": {
+    "plan_subtask_count": 4,
+    "plan_has_low_signal_domains": false,
+    "report_has_verified_section": false,
+    "report_has_tentative_section": false,
+    "report_has_uncertainty_section": false,
+    "report_has_next_steps_section": false,
+    "authoritative_link_count": 3,
+    "report_count": 3,
+    "export_has_searches": true,
+    "export_has_reports": true
+  }
+}

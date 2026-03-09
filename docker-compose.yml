@@ -20,7 +20,7 @@ services:
   backend:
     build:
       dockerfile: ./Dockerfiles/backend_dockerfile
-    image: ghcr.io/dankeg/kestrelai-backend:commit-${COMMIT_SHA}
+    image: ghcr.io/dankeg/kestrelai-backend:commit-${COMMIT_SHA:-dev}
     container_name: kestrel-backend
     restart: unless-stopped
     working_dir: /app
@@ -30,24 +30,28 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - CHROMA_TELEMETRY_DISABLED=1
+      - CHROMA_PRODUCT_TELEMETRY_IMPL=chromadb.telemetry.product.noop.NoopProductTelemetry
+      - MODEL_NAME=gemma3:4b
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai_compatible}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:11434}
       - SEARXNG_URL=http://searxng:8080
     volumes:
-      - ./KestrelAI:/app
+      - ./KestrelAI:/app/KestrelAI
       - ./notes:/app/notes
       - ./exports:/app/exports
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn KestrelAI.backend.main:app --host 0.0.0.0 --port 8000
     depends_on:
       redis: { condition: service_started }
-      ollama: { condition: service_started }
-      ollama-init: { condition: service_completed_successfully }
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - kestrel-network
 
   frontend:
     build:
       dockerfile: ./Dockerfiles/frontend_dockerfile
-    image: ghcr.io/dankeg/kestrelai-frontend:commit-${COMMIT_SHA}
+    image: ghcr.io/dankeg/kestrelai-frontend:commit-${COMMIT_SHA:-dev}
     container_name: kestrel-frontend
     restart: unless-stopped
     working_dir: /app
@@ -68,7 +72,7 @@ services:
   agent:
     build:
       dockerfile: ./Dockerfiles/agent_dockerfile
-    image: ghcr.io/dankeg/kestrelai-agent:commit-${COMMIT_SHA}
+    image: ghcr.io/dankeg/kestrelai-agent:commit-${COMMIT_SHA:-dev}
     container_name: kestrel-agent
     restart: unless-stopped
     working_dir: /app
@@ -77,22 +81,79 @@ services:
       - PYTHONPATH=/app
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - CHROMA_TELEMETRY_DISABLED=1
+      - CHROMA_PRODUCT_TELEMETRY_IMPL=chromadb.telemetry.product.noop.NoopProductTelemetry
+      - GLOBAL_DISABLE_TIMEOUTS=${GLOBAL_DISABLE_TIMEOUTS:-0}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai_compatible}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:11434}
       - SEARXNG_URL=http://searxng:8080
-      - MODEL_NAME=${MODEL_NAME:-gemma3:27b}
+      - MODEL_NAME=gemma3:4b
       - OLLAMA_KEEP_ALIVE=24h
+      - LLM_REQUEST_TIMEOUT_SECONDS=${LLM_REQUEST_TIMEOUT_SECONDS:-0}
+      - LLM_REQUEST_MAX_RETRIES=${LLM_REQUEST_MAX_RETRIES:-1}
+      - ORCHESTRATOR_PLANNING_TIMEOUT_SECONDS=${ORCHESTRATOR_PLANNING_TIMEOUT_SECONDS:-0}
+      - ORCHESTRATOR_PLANNING_HARD_TIMEOUT_SECONDS=${ORCHESTRATOR_PLANNING_HARD_TIMEOUT_SECONDS:-0}
+      - ORCHESTRATOR_REVIEW_TIMEOUT_SECONDS=${ORCHESTRATOR_REVIEW_TIMEOUT_SECONDS:-0}
+      - ORCHESTRATOR_DEDUPE_TIMEOUT_SECONDS=${ORCHESTRATOR_DEDUPE_TIMEOUT_SECONDS:-0}
+      - ORCHESTRATOR_DEDUPE_FALLBACK_MAX_TOKENS=${ORCHESTRATOR_DEDUPE_FALLBACK_MAX_TOKENS:-2500}
+      - ORCHESTRATOR_SUMMARIZER_TIMEOUT_SECONDS=${ORCHESTRATOR_SUMMARIZER_TIMEOUT_SECONDS:-0}
+      - ORCHESTRATOR_SUMMARIZER_PRESERVE_FACTS=${ORCHESTRATOR_SUMMARIZER_PRESERVE_FACTS:-0}
+      - ORCHESTRATOR_PREPLANNING_MAX_STEPS=${ORCHESTRATOR_PREPLANNING_MAX_STEPS:-2}
+      - ORCHESTRATOR_PREPLANNING_STEP_TIMEOUT_SECONDS=${ORCHESTRATOR_PREPLANNING_STEP_TIMEOUT_SECONDS:-0}
+      - ORCHESTRATOR_PREPLANNING_TOTAL_TIMEOUT_SECONDS=${ORCHESTRATOR_PREPLANNING_TOTAL_TIMEOUT_SECONDS:-0}
+      - WORKER_STEP_TIMEOUT_SECONDS=${WORKER_STEP_TIMEOUT_SECONDS:-0}
+      - WORKER_MAX_CONSECUTIVE_TIMEOUTS=${WORKER_MAX_CONSECUTIVE_TIMEOUTS:-2}
+      - WORKER_MAX_TIMEOUT_RECOVERY_CYCLES=${WORKER_MAX_TIMEOUT_RECOVERY_CYCLES:-1}
+      - WORKER_FINALIZATION_GRACE_CYCLES=${WORKER_FINALIZATION_GRACE_CYCLES:-0}
+      - WORKER_UNBOUNDED_FINALIZATION_STEP=${WORKER_UNBOUNDED_FINALIZATION_STEP:-1}
+      - SEARXNG_CONNECT_TIMEOUT_SECONDS=${SEARXNG_CONNECT_TIMEOUT_SECONDS:-5}
+      - SEARXNG_READ_TIMEOUT_SECONDS=${SEARXNG_READ_TIMEOUT_SECONDS:-12}
+      - SEARXNG_ENGINES=${SEARXNG_ENGINES:-bing,yahoo,arxiv,pubmed,mwmbl}
+      - SEARXNG_RETRY_WITHOUT_ENGINES=${SEARXNG_RETRY_WITHOUT_ENGINES:-1}
+      - PAGE_FETCH_CONNECT_TIMEOUT_SECONDS=${PAGE_FETCH_CONNECT_TIMEOUT_SECONDS:-4}
+      - PAGE_FETCH_READ_TIMEOUT_SECONDS=${PAGE_FETCH_READ_TIMEOUT_SECONDS:-8}
+      - TOOL_SEARCH_TOTAL_TIMEOUT_SECONDS=${TOOL_SEARCH_TOTAL_TIMEOUT_SECONDS:-0}
+      - TOOL_SEARCH_MAX_FETCHED_HITS=${TOOL_SEARCH_MAX_FETCHED_HITS:-3}
+      - SUBTASK_CONTEXT_BUILD_TIMEOUT_SECONDS=${SUBTASK_CONTEXT_BUILD_TIMEOUT_SECONDS:-0}
+      - SUBTASK_ACTION_PLAN_TIMEOUT_SECONDS=${SUBTASK_ACTION_PLAN_TIMEOUT_SECONDS:-0}
+      - SUBTASK_ACTION_PLAN_MIN_TIMEOUT_SECONDS=${SUBTASK_ACTION_PLAN_MIN_TIMEOUT_SECONDS:-0}
+      - SUBTASK_ACTION_EXECUTION_RESERVE_SECONDS=${SUBTASK_ACTION_EXECUTION_RESERVE_SECONDS:-20}
+      - AGENT_LLM_STEP_TIMEOUT_SECONDS=${AGENT_LLM_STEP_TIMEOUT_SECONDS:-0}
+      - AGENT_FACT_EXTRACTION_TIMEOUT_SECONDS=${AGENT_FACT_EXTRACTION_TIMEOUT_SECONDS:-0}
+      - AGENT_CHECKPOINT_HIERARCHY_TIMEOUT_SECONDS=${AGENT_CHECKPOINT_HIERARCHY_TIMEOUT_SECONDS:-0}
+      - AGENT_RAG_READ_TIMEOUT_SECONDS=${AGENT_RAG_READ_TIMEOUT_SECONDS:-0}
+      - AGENT_RAG_WRITE_TIMEOUT_SECONDS=${AGENT_RAG_WRITE_TIMEOUT_SECONDS:-0}
+      - AGENT_SUBTASK_FINAL_REPORT_TIMEOUT_SECONDS=${AGENT_SUBTASK_FINAL_REPORT_TIMEOUT_SECONDS:-0}
+      - AGENT_FINAL_REPORT_TIMEOUT_SECONDS=${AGENT_FINAL_REPORT_TIMEOUT_SECONDS:-0}
+      - SUBTASK_FORCE_SEARCH_MAX_CONSECUTIVE_THINKS=${SUBTASK_FORCE_SEARCH_MAX_CONSECUTIVE_THINKS:-2}
+      - SUBTASK_FORCE_SEARCH_MIN_SEARCHES=${SUBTASK_FORCE_SEARCH_MIN_SEARCHES:-1}
+      - SUBTASK_FORCE_SEARCH_MIN_UNIQUE_QUERIES=${SUBTASK_FORCE_SEARCH_MIN_UNIQUE_QUERIES:-1}
+      - SUBTASK_MIN_SEARCHES_BEFORE_CLOSE=${SUBTASK_MIN_SEARCHES_BEFORE_CLOSE:-1}
+      - SUBTASK_ENFORCE_CLOSE_EVIDENCE_GUARD=${SUBTASK_ENFORCE_CLOSE_EVIDENCE_GUARD:-1}
+      - ORCHESTRATOR_MAX_ITERATIONS_PER_SUBTASK=${ORCHESTRATOR_MAX_ITERATIONS_PER_SUBTASK:-6}
+      - ORCHESTRATOR_MIN_ACTIONS_BEFORE_REVIEW=${ORCHESTRATOR_MIN_ACTIONS_BEFORE_REVIEW:-2}
+      - ORCHESTRATOR_REVIEW_EVERY_N_ACTIONS=${ORCHESTRATOR_REVIEW_EVERY_N_ACTIONS:-2}
+      - ORCHESTRATOR_MAX_SUBTASKS=${ORCHESTRATOR_MAX_SUBTASKS:-4}
+      - ORCHESTRATOR_MIN_SUBTASK_ACTIONS=${ORCHESTRATOR_MIN_SUBTASK_ACTIONS:-2}
+      - ORCHESTRATOR_MIN_SUBTASK_SEARCHES=${ORCHESTRATOR_MIN_SUBTASK_SEARCHES:-1}
+      - ORCHESTRATOR_MIN_SUBTASK_UNIQUE_QUERIES=${ORCHESTRATOR_MIN_SUBTASK_UNIQUE_QUERIES:-1}
+      - ORCHESTRATOR_MIN_SUBTASK_CHECKPOINTS=${ORCHESTRATOR_MIN_SUBTASK_CHECKPOINTS:-0}
     volumes:
-      - ./KestrelAI:/app
+      - ./KestrelAI:/app/KestrelAI
       - ./notes:/app/notes
-    command: python -m model_loop
+    command: python -m KestrelAI.model_loop
     depends_on:
       redis: { condition: service_started }
       searxng: { condition: service_started }
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - kestrel-network
 
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
+    profiles: ["docker-ollama"]
     restart: unless-stopped
     ports:
       - "11434:11434"
@@ -110,11 +171,12 @@ services:
 
   ollama-init:
     image: ollama/ollama:latest
+    profiles: ["docker-ollama"]
     depends_on:
       ollama: { condition: service_started }
     environment:
       - OLLAMA_HOST=ollama:11434
-      - MODEL_NAME=${MODEL_NAME:-gemma3:27b}
+      - MODEL_NAME=gemma3:4b
     volumes:
       - ollama-models:/root/.ollama
     entrypoint: ["/bin/sh", "-c"]

@@ -72,30 +72,21 @@ def sample_documents():
 @pytest.fixture
 def populated_memory_store(memory_store, sample_documents):
     """MemoryStore with sample documents."""
+    payload = {
+        "documents": [[doc["text"] for doc in sample_documents]],
+        "metadatas": [[doc["metadata"] for doc in sample_documents]],
+        "distances": [[0.1, 0.2, 0.3, 0.4]],
+        "ids": [[doc["id"] for doc in sample_documents]],
+    }
 
-    # Mock the search results to return our sample documents
-    def mock_query(query_embeddings=None, n_results=5):
-        return {
-            "documents": [[doc["text"] for doc in sample_documents]],
-            "metadatas": [[doc["metadata"] for doc in sample_documents]],
-            "distances": [[0.1, 0.2, 0.3, 0.4]],
-            "ids": [[doc["id"] for doc in sample_documents]],
+    memory_store.search = Mock(return_value=payload)
+    memory_store.collection.get = Mock(
+        return_value={
+            "ids": [doc["id"] for doc in sample_documents],
+            "documents": [doc["text"] for doc in sample_documents],
+            "metadatas": [doc["metadata"] for doc in sample_documents],
         }
-
-    memory_store.collection.query = Mock(side_effect=mock_query)
-
-    # Mock add to store documents
-    stored_docs = {}
-
-    def mock_add(ids, documents, metadatas, embeddings):
-        for doc_id, doc, meta in zip(ids, documents, metadatas):
-            stored_docs[doc_id] = {"text": doc, "metadata": meta}
-
-    memory_store.collection.add = Mock(side_effect=mock_add)
-
-    # Add documents
-    for doc in sample_documents:
-        memory_store.add(doc["id"], doc["text"], doc["metadata"])
+    )
 
     return memory_store
 
@@ -476,27 +467,19 @@ class TestHybridRetriever:
         assert isinstance(metas, list)
         # Should get documents from all tasks
 
-    def test_get_all_documents_uses_multiple_queries(self, populated_memory_store):
-        """Test that _get_all_documents_for_bm25 uses multiple queries for better coverage."""
+    def test_get_all_documents_prefers_collection_get(self, populated_memory_store):
+        """BM25 bootstrap should prefer direct collection.get over broad search fallback."""
         retriever = HybridRetriever(populated_memory_store, enable_bm25=True)
 
-        # Mock the search method to track how many times it's called
-        call_count = 0
-        original_search = retriever.memory_store.search
-
-        def mock_search(query, k):
-            nonlocal call_count
-            call_count += 1
-            return original_search(query, k)
-
-        retriever.memory_store.search = mock_search
-
-        # Get documents
         docs, ids, metas = retriever._get_all_documents_for_bm25("test_task")
 
-        # Should use multiple queries (the fix uses 4 different queries)
-        assert call_count >= 1  # At least one query should be made
-        # Note: exact count depends on implementation, but should be multiple
+        assert docs
+        assert ids
+        assert metas
+        retriever.memory_store.collection.get.assert_called_once_with(
+            include=["documents", "metadatas"]
+        )
+        retriever.memory_store.search.assert_not_called()
 
     def test_fused_score_used_for_sorting(self, memory_store):
         """Test that fused_score is used correctly for sorting, not distance."""

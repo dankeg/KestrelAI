@@ -78,7 +78,7 @@ class MCPClient:
             await self._send_request(init_request)
 
             # Wait for initialization response with timeout
-            response = await asyncio.wait_for(self._read_response(), timeout=10.0)
+            response = await asyncio.wait_for(self._read_response(), timeout=100.0)
 
             if response and "result" in response:
                 self.is_connected = True
@@ -130,7 +130,7 @@ class MCPClient:
 
                 # Terminate process
                 self.process.terminate()
-                await asyncio.wait_for(self.process.wait(), timeout=5)
+                await asyncio.wait_for(self.process.wait(), timeout=50)
 
             except Exception as e:
                 logger.error(f"Error during disconnect: {e}")
@@ -243,7 +243,7 @@ class MCPClient:
             await self._send_request(request)
 
             # Wait for response with timeout
-            response = await asyncio.wait_for(future, timeout=30.0)
+            response = await asyncio.wait_for(future, timeout=300.0)
             return response
 
         except TimeoutError:
@@ -268,7 +268,7 @@ class MCPClient:
                 asyncio.get_event_loop().run_in_executor(
                     None, self.process.stdout.readline
                 ),
-                timeout=30.0,
+                timeout=300.0,
             )
 
             if line:

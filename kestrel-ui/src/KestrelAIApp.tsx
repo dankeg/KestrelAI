@@ -22,8 +22,28 @@ import {
 } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { X } from "lucide-react";
 import logo from "./assets/logo.png";
+import SettingsModal from "./SettingsModal";
+import {
+  type AppSettings,
+  type AppSettingsFormState,
+  type AvailableModelsResponse,
+  DEFAULT_SETTINGS,
+  buildSettingsSavePayload,
+  normalizeSettingsFormState,
+  sanitizeSettingsForStorage,
+  toSettingsFormState,
+} from "./settings";
+import {
+  type ActivityEntry,
+  type Metrics,
+  type ResearchPlan,
+  type Task,
+  defaultMetrics,
+  normalizeActivityEntry,
+  normalizeResearchPlan,
+  normalizeTask,
+} from "./apiSchemas";
 
 // ==========================
 // API Configuration
@@ -31,69 +51,6 @@ import logo from "./assets/logo.png";
 const API_BASE_URL = window.location.hostname === 'localhost' 
   ? "http://localhost:8000/api/v1" 
   : "http://backend:8000/api/v1";
-
-// ==========================
-// Types
-// ==========================
-interface Subtask {
-  order: number;
-  description: string;
-  success_criteria: string;
-  status: "pending" | "in_progress" | "completed";
-  findings?: string[];
-}
-
-interface ResearchPlan {
-  restated_task: string;
-  subtasks: Subtask[];
-  current_subtask_index: number;
-  created_at: number;
-}
-
-interface Metrics {
-  searchCount: number;
-  thinkCount: number;
-  summaryCount: number;
-  checkpointCount: number;
-  webFetchCount?: number;
-  llmTokensUsed?: number;
-  errorCount?: number;
-}
-
-type TaskStatus = "configuring" | "pending" | "active" | "complete" | "paused" | "failed";
-
-interface Task {
-  id: string;
-  name: string;
-  description: string;
-  budgetMinutes: number;
-  status: TaskStatus;
-  progress?: number;
-  elapsed?: number;
-  metrics?: Metrics;
-  createdAt?: number;
-  updatedAt?: number;
-
-  /** Frontend-only: true until we POST this task on Start Research */
-  isDraft?: boolean;
-}
-
-interface ActivityEntry {
-  id: string;
-  taskId: string;
-  time: string;
-  type:
-    | "task_start"
-    | "search"
-    | "analysis"
-    | "summary"
-    | "checkpoint"
-    | "error"
-    | "thinking"
-    | "web_fetch";
-  message: string;
-  timestamp: number;
-}
 
 interface SearchEntry {
   id: string;
@@ -124,25 +81,6 @@ interface SystemMetrics {
   tokensUsed?: number;
   estimatedCost?: number;
 }
-
-// ==========================
-// App Settings
-// ==========================
-type OllamaMode = "local" | "docker";
-type Orchestrator = "hummingbird" | "kestrel" | "albatross";
-type Theme = "amber" | "blue";
-
-interface AppSettings {
-  ollamaMode: OllamaMode;
-  orchestrator: Orchestrator;
-  theme: Theme;
-}
-
-const DEFAULT_SETTINGS: AppSettings = {
-  ollamaMode: "local",
-  orchestrator: "kestrel",
-  theme: "amber",
-};
 
 // ==========================
 // API Client
@@ -235,7 +173,7 @@ class KestrelAPI {
   // ---- Activity/Search/Reports/Metrics ----
   async getTaskActivity(taskId: string, limit: number = 50): Promise<ActivityEntry[]> {
     const res = await this.fetch(`/tasks/${taskId}/activity?limit=${limit}`);
-    return res || [];
+    return Array.isArray(res) ? res.map(normalizeActivityEntry) : [];
   }
 
   async getTaskSearchHistory(taskId: string, limit: number = 50): Promise<SearchEntry[]> {
@@ -262,7 +200,7 @@ class KestrelAPI {
   async getTaskResearchPlan(taskId: string): Promise<ResearchPlan | null> {
     try {
       const res = await this.fetch(`/tasks/${taskId}/research-plan`);
-      return res?.message ? null : res;
+      return normalizeResearchPlan(res);
     } catch (err) {
       console.warn("Failed to get research plan:", err);
       return null;
@@ -289,20 +227,40 @@ class KestrelAPI {
     return null;
   }
 
-  async saveSettings(settings: AppSettings): Promise<void> {
+  async saveSettings(settings: AppSettingsFormState): Promise<AppSettings | null> {
     try {
       const res = await fetch(`${this.baseURL}/settings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings),
+        body: JSON.stringify(buildSettingsSavePayload(settings)),
       });
-      if (!res.ok) {
-        // Do not crash the UI if the endpoint is not implemented yet
-        console.warn("Settings POST failed:", res.status, res.statusText);
-      }
+      if (res.ok) return await res.json();
+      console.warn("Settings POST failed:", res.status, res.statusText);
     } catch (err) {
       console.warn("Settings POST error:", err);
     }
+    return null;
+  }
+
+  async getAvailableModels(settings: AppSettingsFormState): Promise<AvailableModelsResponse | null> {
+    try {
+      const query = new URLSearchParams({ provider: settings.llmProvider });
+      if (settings.llmProvider === "ollama") {
+        query.set("mode", settings.ollamaMode);
+      } else if (settings.openaiBaseUrl.trim()) {
+        query.set("base_url", settings.openaiBaseUrl.trim());
+      }
+      const res = await fetch(`${this.baseURL}/settings/models?${query.toString()}`, {
+        headers:
+          settings.llmProvider === "openai_compatible" && settings.openaiApiKey.trim()
+            ? { "X-Kestrel-Api-Key": settings.openaiApiKey.trim() }
+            : undefined,
+      });
+      if (res.ok) return await res.json();
+    } catch (err) {
+      console.warn("Settings models GET error:", err);
+    }
+    return null;
   }
 }
 
@@ -313,23 +271,6 @@ const api = new KestrelAPI();
 // Utilities
 // ==========================
 const uid = () => Math.random().toString(36).slice(2, 10);
-
-const defaultMetrics = (): Metrics => ({
-  searchCount: 0,
-  thinkCount: 0,
-  summaryCount: 0,
-  checkpointCount: 0,
-});
-
-const normalizeTask = (t: any): Task => {
-  const budgetMinutes = t?.budgetMinutes ?? t?.budget_minutes ?? 180;
-  return {
-    ...t,
-    budgetMinutes,
-    metrics: t?.metrics ?? defaultMetrics(),
-    isDraft: !!t?.isDraft, // default false
-  };
-};
 
 const formatElapsed = (seconds?: number): string => {
   if (seconds === undefined || seconds === null) return "--:--";
@@ -670,12 +611,7 @@ function useTaskActivity(taskId: string | null) {
         setActivity(data);
       } catch (err) {
         console.error("Failed to load activity:", err);
-        setActivity([
-          { id: "1", taskId, time: "14:23:12", type: "search", message: "🔍 Searching for information", timestamp: Date.now() },
-          { id: "2", taskId, time: "14:22:45", type: "analysis", message: "🤔 Analyzing findings", timestamp: Date.now() - 27000 },
-          { id: "3", taskId, time: "14:22:10", type: "summary", message: "📝 Creating summary", timestamp: Date.now() - 62000 },
-          { id: "4", taskId, time: "14:21:30", type: "checkpoint", message: "💾 Saving checkpoint", timestamp: Date.now() - 102000 },
-        ]);
+        setActivity([]);
       } finally {
         setIsLoading(false);
       }
@@ -708,11 +644,7 @@ function useSearchHistory(taskId: string | null) {
         setSearches(data);
       } catch (err) {
         console.error("Failed to load search history:", err);
-        setSearches([
-          { id: "1", taskId, time: "14:23:12", query: "Anthropic research grants undergraduate", results: 8, timestamp: Date.now() },
-          { id: "2", taskId, time: "14:22:30", query: "AAAI undergraduate fellowships 2025", results: 12, timestamp: Date.now() - 42000 },
-          { id: "3", taskId, time: "14:21:15", query: "NSF REU AI programs deadline", results: 15, timestamp: Date.now() - 117000 },
-        ]);
+        setSearches([]);
       } finally {
         setIsLoading(false);
       }
@@ -743,38 +675,7 @@ function useReports(taskId: string | null) {
         setReports(data);
       } catch (err) {
         console.error("Failed to load reports:", err);
-        setReports([
-          {
-            id: uid(),
-            taskId: taskId!,
-            timestamp: Date.now(),
-            title: "Research Summary",
-            content: `# Research Summary
-
-## Key Findings
-
-This is a **placeholder report** with *markdown* formatting.
-
-### Important Points
-- First finding with **bold text**
-- Second finding with *italic text*
-- Third finding with a [link](https://example.com)
-
-### Code Example
-\`\`\`python
-def example():
-    return "Hello World"
-\`\`\`
-
-> This is a blockquote with important information
-
----
-
-### Conclusion
-The research has uncovered several important insights that will guide our next steps.`,
-            format: "markdown",
-          },
-        ]);
+        setReports([]);
       } finally {
         setIsLoading(false);
       }
@@ -811,11 +712,13 @@ function useMetrics(taskId: string | null) {
       } catch (err) {
         console.error("Failed to load metrics:", err);
         setMetrics({
-          llmCalls: 128,
-          searches: 42,
-          pagesAnalyzed: 181,
-          summaries: 19,
-          checkpoints: 8,
+          llmCalls: 0,
+          searches: 0,
+          pagesAnalyzed: 0,
+          summaries: 0,
+          checkpoints: 0,
+          tokensUsed: 0,
+          estimatedCost: 0,
         });
       } finally {
         setIsLoading(false);
@@ -866,7 +769,7 @@ function useResearchPlan(taskId: string | null) {
 // Hook: App Settings
 // ==========================
 function useAppSettings() {
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<AppSettingsFormState>(DEFAULT_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
 
   // Load settings on mount
@@ -876,14 +779,18 @@ function useAppSettings() {
         // First try to get settings from backend
         const backendSettings = await api.getSettings();
         if (backendSettings) {
-          setSettings(backendSettings);
+          const merged = toSettingsFormState(backendSettings);
+          setSettings(merged);
           // Also save to localStorage as backup
-          localStorage.setItem("kestrel.settings", JSON.stringify(backendSettings));
+          localStorage.setItem(
+            "kestrel.settings",
+            JSON.stringify(sanitizeSettingsForStorage(merged))
+          );
         } else {
           // Fallback to localStorage
           const raw = localStorage.getItem("kestrel.settings");
           if (raw) {
-            const localSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+            const localSettings = toSettingsFormState(JSON.parse(raw));
             setSettings(localSettings);
             // Try to sync to backend
             api.saveSettings(localSettings);
@@ -895,7 +802,7 @@ function useAppSettings() {
         try {
           const raw = localStorage.getItem("kestrel.settings");
           if (raw) {
-            setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(raw) });
+            setSettings(toSettingsFormState(JSON.parse(raw)));
           }
         } catch {
           // Use default settings
@@ -908,24 +815,36 @@ function useAppSettings() {
     loadSettings();
   }, []);
 
-  const updateSettings = async (patch: Partial<AppSettings>) => {
-    const next = { ...settings, ...patch };
+  const saveSettings = async (nextSettings: AppSettingsFormState) => {
+    const next = normalizeSettingsFormState(nextSettings);
     setSettings(next);
     try {
-      localStorage.setItem("kestrel.settings", JSON.stringify(next));
+      localStorage.setItem(
+        "kestrel.settings",
+        JSON.stringify(sanitizeSettingsForStorage(next))
+      );
     } catch { /* ignore quota errors */ }
 
-    // Fire-and-forget best-effort POST
-    api.saveSettings(next);
+    const saved = await api.saveSettings(next);
+    if (saved) {
+      const persisted = toSettingsFormState(saved);
+      setSettings(persisted);
+      try {
+        localStorage.setItem(
+          "kestrel.settings",
+          JSON.stringify(sanitizeSettingsForStorage(persisted))
+        );
+      } catch { /* ignore quota errors */ }
+    }
   };
 
-  return { settings, updateSettings, isLoading };
+  return { settings, saveSettings, isLoading };
 }
 
 // ==========================
 // Hook: Theme Management
 // ==========================
-function useTheme(settings: AppSettings) {
+function useTheme(settings: AppSettingsFormState) {
   useEffect(() => {
     // Apply theme to document
     document.documentElement.setAttribute('data-theme', settings.theme);
@@ -962,7 +881,7 @@ function useTaskRealtime(
             handlers.onStatus(payload);
             break;
           case "activity":
-            handlers.onActivity(payload as ActivityEntry);
+            handlers.onActivity(normalizeActivityEntry(payload));
             break;
           case "search":
             handlers.onSearch(payload as SearchEntry);
@@ -975,7 +894,10 @@ function useTaskRealtime(
             break;
           case "research_plan":
             try {
-              handlers.onResearchPlan(payload as ResearchPlan);
+              const normalizedPlan = normalizeResearchPlan(payload);
+              if (normalizedPlan) {
+                handlers.onResearchPlan(normalizedPlan);
+              }
             } catch (e) {
               console.error("Failed to handle research plan update:", e);
             }
@@ -1435,7 +1357,7 @@ function TaskDashboard({
         merged.metrics = { ...(task.metrics || {}), ...(u.metrics as Metrics) };
       }
       if (u?.research_plan) {
-        setResearchPlan(u.research_plan);
+        setResearchPlan(normalizeResearchPlan(u.research_plan));
       }
       onUpdate(task.id, merged);
       if (u?.status) setIsPaused(u.status === "paused");
@@ -1621,20 +1543,13 @@ function TaskDashboard({
         </div>
 
         {/* System Metrics */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
               <Brain className="w-4 h-4 theme-text-primary-600" />
               <span className="text-2xl font-bold theme-text-primary-700">{metrics.llmCalls}</span>
             </div>
             <div className="text-xs uppercase text-gray-600 font-semibold">LLM Calls</div>
-          </div>
-          <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
-            <div className="flex items-center justify-between mb-1">
-              <Search className="w-4 h-4 theme-text-primary-600" />
-              <span className="text-2xl font-bold theme-text-primary-700">{metrics.searches}</span>
-            </div>
-            <div className="text-xs uppercase text-gray-600 font-semibold">Searches</div>
           </div>
           <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
@@ -1648,20 +1563,22 @@ function TaskDashboard({
           <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
               <FileText className="w-4 h-4 theme-text-primary-600" />
-              <span className="text-2xl font-bold theme-text-primary-700">{metrics.summaries}</span>
+              <span className="text-2xl font-bold theme-text-primary-700">
+                {metrics.tokensUsed ?? 0}
+              </span>
             </div>
-            <div className="text-xs uppercase text-gray-600 font-semibold">Summaries</div>
+            <div className="text-xs uppercase text-gray-600 font-semibold">Tokens</div>
           </div>
           <div className="bg-white/90 backdrop-blur rounded-lg p-4 border theme-border-primary-200 shadow-md hover:shadow-lg transition-shadow">
             <div className="flex items-center justify-between mb-1">
               <Save className="w-4 h-4 theme-text-primary-600" />
               <span className="text-2xl font-bold theme-text-primary-700">
-                {metrics.checkpoints}
+                {typeof metrics.estimatedCost === "number"
+                  ? metrics.estimatedCost.toFixed(2)
+                  : "0.00"}
               </span>
             </div>
-            <div className="text-xs uppercase text-gray-600 font-semibold">
-              Checkpoints
-            </div>
+            <div className="text-xs uppercase text-gray-600 font-semibold">Est. Cost</div>
           </div>
         </div>
 
@@ -1679,7 +1596,9 @@ function TaskDashboard({
               </h3>
             </div>
             <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
-              {activity.map((entry) => (
+              {activity.length === 0 ? (
+                <div className="text-sm text-gray-500">No activity yet.</div>
+              ) : activity.map((entry) => (
                 <div
                   key={entry.id}
                   className="flex items-center gap-3 p-2 theme-bg-primary-50 rounded-lg border theme-border-primary-100"
@@ -1702,7 +1621,9 @@ function TaskDashboard({
               </h3>
             </div>
             <div className="p-4 space-y-2 max-h-64 overflow-y-auto">
-              {searches.map((search) => (
+              {searches.length === 0 ? (
+                <div className="text-sm text-gray-500">No searches recorded yet.</div>
+              ) : searches.map((search) => (
                 <div
                   key={search.id}
                   className="flex items-center gap-2 p-2 theme-bg-primary-50 rounded-lg text-xs border theme-border-primary-100"
@@ -1765,167 +1686,6 @@ function TaskDashboard({
   );
 }
 
-function SettingsModal({
-  open,
-  onClose,
-  settings,
-  onChange,
-}: {
-  open: boolean;
-  onClose: () => void;
-  settings: AppSettings;
-  onChange: (patch: Partial<AppSettings>) => void;
-}) {
-  // Close on ESC
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
-  const SelFrame = ({ selected, children }: { selected: boolean; children: React.ReactNode }) => (
-    <div
-      className={[
-        "p-4 rounded-xl border-2 transition-all bg-white",
-        selected ? "theme-border-primary-500 shadow-md ring-2 ring-theme-border-primary-200" : "border-gray-200 hover:theme-border-primary-300",
-      ].join(" ")}
-    >
-      {children}
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 z-[100]">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
-      {/* Dialog */}
-      <div className="absolute inset-0 flex items-center justify-center p-4">
-        <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border theme-border-primary-200 overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 theme-bg-primary-50 border-b theme-border-primary-200">
-            <h2 className="text-lg font-bold text-gray-900">Settings</h2>
-            <button onClick={onClose} className="p-2 rounded hover:theme-bg-primary-100">
-              <X className="w-5 h-5 theme-text-primary-700" />
-            </button>
-          </div>
-
-          {/* Body */}
-          <div className="p-6 space-y-6">
-            {/* Theme selection */}
-            <section>
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">Theme</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <button onClick={() => onChange({ theme: "amber" })}>
-                  <SelFrame selected={settings.theme === "amber"}>
-                    <div className="flex items-center gap-2 mb-1">
-                      <div className="w-4 h-4 rounded-full bg-gradient-to-r from-amber-400 to-orange-500"></div>
-                      <div className="font-semibold text-gray-900">Amber</div>
-                    </div>
-                    <div className="text-xs text-gray-600">
-                      Warm orange and amber tones for a cozy feel.
-                    </div>
-                  </SelFrame>
-                </button>
-
-                <button onClick={() => onChange({ theme: "blue" })}>
-                  <SelFrame selected={settings.theme === "blue"}>
-                    <div className="flex items-center gap-2 mb-1">
-                      <div className="w-4 h-4 rounded-full bg-gradient-to-r from-blue-400 to-cyan-500"></div>
-                      <div className="font-semibold text-gray-900">Blue</div>
-                    </div>
-                    <div className="text-xs text-gray-600">
-                      Cool blue and cyan tones for a professional look.
-                    </div>
-                  </SelFrame>
-                </button>
-              </div>
-            </section>
-
-            {/* Runtime selection */}
-            <section>
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">Ollama Runtime</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <button onClick={() => onChange({ ollamaMode: "local" })}>
-                  <SelFrame selected={settings.ollamaMode === "local"}>
-                    <div className="font-semibold text-gray-900">Local</div>
-                    <div className="text-xs text-gray-600">
-                      Use the Ollama instance running on this machine.
-                    </div>
-                  </SelFrame>
-                </button>
-
-                <button onClick={() => onChange({ ollamaMode: "docker" })}>
-                  <SelFrame selected={settings.ollamaMode === "docker"}>
-                    <div className="font-semibold text-gray-900">Docker</div>
-                    <div className="text-xs text-gray-600">
-                      Route requests to the Dockerized Ollama service.
-                    </div>
-                  </SelFrame>
-                </button>
-              </div>
-            </section>
-
-            {/* Orchestrator selection */}
-            <section>
-              <h3 className="text-sm font-semibold text-gray-700 mb-3">Orchestrator</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <button onClick={() => onChange({ orchestrator: "hummingbird" })}>
-                  <SelFrame selected={settings.orchestrator === "hummingbird"}>
-                    <div className="flex items-center gap-2 mb-1">
-                      <Zap className="w-4 h-4 text-amber-600" />
-                      <div className="font-semibold text-gray-900">Hummingbird</div>
-                    </div>
-                    <div className="text-xs text-gray-600">
-                      Fast, focused answers on a single prompt with minimal exploration.
-                    </div>
-                  </SelFrame>
-                </button>
-
-                <button onClick={() => onChange({ orchestrator: "kestrel" })}>
-                  <SelFrame selected={settings.orchestrator === "kestrel"}>
-                    <div className="flex items-center gap-2 mb-1">
-                      <Brain className="w-4 h-4 text-amber-600" />
-                      <div className="font-semibold text-gray-900">Kestrel</div>
-                    </div>
-                    <div className="text-xs text-gray-600">
-                      Balanced exploration: expands key angles and synthesizes medium-depth insights.
-                    </div>
-                  </SelFrame>
-                </button>
-
-                <button onClick={() => onChange({ orchestrator: "albatross" })}>
-                  <SelFrame selected={settings.orchestrator === "albatross"}>
-                    <div className="flex items-center gap-2 mb-1">
-                      <Globe className="w-4 h-4 text-amber-600" />
-                      <div className="font-semibold text-gray-900">Albatross</div>
-                    </div>
-                    <div className="text-xs text-gray-600">
-                      Long-horizon research: new leads, deep dives, and cross-topic synthesis.
-                    </div>
-                  </SelFrame>
-                </button>
-              </div>
-            </section>
-          </div>
-
-          {/* Footer */}
-          <div className="px-6 py-4 bg-gradient-to-r from-amber-50 to-orange-50 border-t border-amber-200 flex justify-end">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 rounded-lg bg-amber-600 text-white font-semibold hover:bg-amber-700 transition"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 
 // ==========================
 // Main App Component
@@ -1946,8 +1706,78 @@ export default function App() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const { settings, updateSettings } = useAppSettings();
+  const { settings, saveSettings } = useAppSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsDraft, setSettingsDraft] = useState<AppSettingsFormState>(DEFAULT_SETTINGS);
+  const [linkModels, setLinkModels] = useState(
+    DEFAULT_SETTINGS.executionModelName === DEFAULT_SETTINGS.controlModelName
+  );
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settingsOpen) {
+      const initialDraft = toSettingsFormState(settings);
+      setSettingsDraft(initialDraft);
+      setLinkModels(
+        initialDraft.executionModelName === initialDraft.controlModelName
+      );
+    }
+  }, [settingsOpen, settings]);
+
+  const updateSettingsDraft = (patch: Partial<AppSettingsFormState>) => {
+    setSettingsDraft((current) =>
+      normalizeSettingsFormState({
+        ...current,
+        ...patch,
+        modelName:
+          (patch.controlModelName ??
+            current.controlModelName ??
+            patch.executionModelName ??
+            current.executionModelName ??
+            patch.modelName ??
+            current.modelName),
+      })
+    );
+  };
+
+  const refreshAvailableModels = async () => {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const response = await api.getAvailableModels(settingsDraft);
+      const models = Array.isArray(response?.models) ? response.models : [];
+      setAvailableModels(models);
+      if (response?.error) {
+        setModelsError(response.error);
+      }
+      if (models.length > 0) {
+        setSettingsDraft((current) =>
+          normalizeSettingsFormState({
+            ...current,
+            executionModelName: current.executionModelName.trim() || models[0],
+            controlModelName: current.controlModelName.trim() || models[0],
+            modelName:
+              current.controlModelName.trim() ||
+              current.executionModelName.trim() ||
+              models[0],
+          })
+        );
+      }
+    } catch (err: any) {
+      setAvailableModels([]);
+      setModelsError(err?.message || "Failed to load models");
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    refreshAvailableModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen, settingsDraft.llmProvider, settingsDraft.ollamaMode, settingsDraft.openaiBaseUrl]);
   
   // Apply theme
   useTheme(settings);
@@ -1962,6 +1792,11 @@ export default function App() {
   const handleStartTask = async () => {
     if (!selectedTask) return;
     await persistAndStartTask(selectedTask.id);
+  };
+
+  const handleSaveSettings = async () => {
+    await saveSettings(settingsDraft);
+    setSettingsOpen(false);
   };
 
   if (isLoading) {
@@ -2127,8 +1962,15 @@ export default function App() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-        settings={settings}
-        onChange={updateSettings}
+        settings={settingsDraft}
+        onChange={updateSettingsDraft}
+        onSave={handleSaveSettings}
+        linkModels={linkModels}
+        onLinkModelsChange={setLinkModels}
+        availableModels={availableModels}
+        modelsLoading={modelsLoading}
+        modelsError={modelsError}
+        onRefreshModels={refreshAvailableModels}
       />
     </div>
   );

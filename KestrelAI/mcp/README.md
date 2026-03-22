@@ -122,26 +122,25 @@ Configuration management for MCP servers and tools.
 
 ```python
 from KestrelAI.mcp.mcp_manager import get_mcp_manager
-from KestrelAI.agents.consolidated_orchestrator import ConsolidatedOrchestrator
+from KestrelAI.agents.research_orchestrator import ResearchOrchestrator
 
 # Initialize MCP system
 mcp_manager = get_mcp_manager()
 await mcp_manager.initialize()
 
 # Create MCP-enhanced orchestrator
-async with MCPOrchestrator([task], llm, profile="kestrel") as orchestrator:
-    # Run research with MCP tools
-    result = await orchestrator.next_action(task)
+orchestrator = ResearchOrchestrator([task], llm, profile="kestrel", use_mcp=True, mcp_manager=mcp_manager)
+result = await orchestrator.next_action(task)
 ```
 
 ### Advanced Usage
 
 ```python
-from KestrelAI.agents.consolidated_research_agent import ConsolidatedResearchAgent, ResearchConfig
+from KestrelAI.agents.web_research_agent import WebResearchAgent, ResearchConfig
 
 # Create MCP-enhanced research agent
 config = ResearchConfig(use_mcp=True, mcp_manager=mcp_manager)
-agent = ConsolidatedResearchAgent("mcp-agent", llm, memory, config)
+agent = WebResearchAgent("mcp-agent", llm, memory, config)
     # Run research step with MCP tools
     result = await agent.run_step(task)
 ```
@@ -184,7 +183,7 @@ result = await mcp_client.call_tool("search_web", {
 
 - `KESTREL_MCP_CONFIG`: Path to MCP configuration file
 - `SEARXNG_URL`: SearXNG search engine URL
-- `OLLAMA_BASE_URL`: Ollama server URL
+- `OPENAI_BASE_URL`: OpenAI-compatible model endpoint
 
 ## Enhanced Research Agents
 

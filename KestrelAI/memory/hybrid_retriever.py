@@ -6,7 +6,8 @@ Combines vector-based semantic search with BM25 keyword search for improved retr
 """
 
 import logging
-from typing import Any
+import os
+from typing import Any, Optional
 
 try:
     from rank_bm25 import BM25Okapi
@@ -16,7 +17,86 @@ except ImportError:
 
 from .vector_store import MemoryStore
 
+try:
+    from langchain.retrievers import EnsembleRetriever
+    from langchain_core.documents import Document
+    from langchain_core.retrievers import BaseRetriever
+except ImportError:  # pragma: no cover - dependency-gated path
+    EnsembleRetriever = None
+    BaseRetriever = None
+    Document = None
+
 logger = logging.getLogger(__name__)
+
+
+if BaseRetriever is not None and Document is not None:
+
+    class _VectorLangChainRetriever(BaseRetriever):
+        """LangChain wrapper around HybridRetriever vector retrieval."""
+
+        hybrid: HybridRetriever
+        k: int = 10
+        task_name: Optional[str] = None
+
+        def _get_relevant_documents(self, query: str) -> list[Document]:
+            results = self.hybrid._vector_search(query, k=self.k)
+            if self.task_name:
+                results = [
+                    r
+                    for r in results
+                    if r.get("metadata", {}).get("task") == self.task_name
+                ]
+
+            docs: list[Document] = []
+            for result in results:
+                metadata = dict(result.get("metadata", {}))
+                metadata["doc_id"] = result.get("doc_id")
+                metadata["vector_score"] = result.get("score", 0.0)
+                metadata["method"] = "vector"
+                docs.append(
+                    Document(
+                        page_content=result.get("content", ""),
+                        metadata=metadata,
+                    )
+                )
+            return docs
+
+        async def _aget_relevant_documents(self, query: str) -> list[Document]:
+            return self._get_relevant_documents(query)
+
+    class _BM25LangChainRetriever(BaseRetriever):
+        """LangChain wrapper around HybridRetriever BM25 retrieval."""
+
+        hybrid: HybridRetriever
+        k: int = 10
+        task_name: Optional[str] = None
+
+        def _get_relevant_documents(self, query: str) -> list[Document]:
+            results = self.hybrid._bm25_search(
+                query,
+                k=self.k,
+                task_name=self.task_name,
+            )
+            docs: list[Document] = []
+            for result in results:
+                metadata = dict(result.get("metadata", {}))
+                metadata["doc_id"] = result.get("doc_id")
+                metadata["bm25_score"] = result.get("score", 0.0)
+                metadata["method"] = "bm25"
+                docs.append(
+                    Document(
+                        page_content=result.get("content", ""),
+                        metadata=metadata,
+                    )
+                )
+            return docs
+
+        async def _aget_relevant_documents(self, query: str) -> list[Document]:
+            return self._get_relevant_documents(query)
+
+else:  # pragma: no cover - dependency-gated path
+    _VectorLangChainRetriever = None
+    _BM25LangChainRetriever = None
 
 
 class HybridRetriever:
@@ -48,6 +128,11 @@ class HybridRetriever:
         # Fusion weights
         self.vector_weight = 0.6  # Weight for vector search results
         self.bm25_weight = 0.4  # Weight for BM25 results
+        self.langchain_retrieval_enabled = bool(
+            EnsembleRetriever is not None
+            and _VectorLangChainRetriever is not None
+            and _BM25LangChainRetriever is not None
+        )
 
     def _tokenize(self, text: str) -> list[str]:
         """Simple tokenization for BM25"""
@@ -80,77 +165,87 @@ class HybridRetriever:
         self, task_name: str | None = None
     ) -> tuple[list[str], list[str], list[dict]]:
         """
-        Get all documents for BM25 indexing.
-        Since ChromaDB doesn't easily expose "get all", we'll use a workaround:
-        search with multiple broad queries to get as many documents as possible.
-
-        FIXED: Use multiple queries and higher k value to retrieve more documents.
-        This is still not perfect but better than a single query with k=1000.
+        Get documents for BM25 indexing.
+        Prefer direct collection.get() to avoid expensive broad vector queries.
         """
         try:
-            # Use multiple generic queries to try to retrieve all documents
-            # This is a limitation - ideally we'd have direct access to all documents
-            # Try different query terms to maximize coverage
-            all_doc_ids = set()
-            all_documents = []
-            all_metadatas = []
-            doc_id_to_index = {}  # Map doc_id to index in lists
+            max_docs = max(50, int(os.getenv("HYBRID_BM25_MAX_DOCS", "500")))
+            collection = getattr(self.memory_store, "collection", None)
 
-            queries = [
-                "research information data",
-                "document text content",
-                "checkpoint summary report",
-                "findings results analysis",
-            ]
+            documents: list[str] = []
+            doc_ids: list[str] = []
+            metadatas: list[dict[str, Any]] = []
 
-            # Use larger k value to get more documents
-            k = 2000  # Increased from 1000
-
-            for query in queries:
-                try:
-                    results = self.memory_store.search(query, k=k)
-
+            if collection is not None and hasattr(collection, "get"):
+                payload = collection.get(include=["documents", "metadatas"])
+                doc_ids = list(payload.get("ids", []) or [])
+                documents = list(payload.get("documents", []) or [])
+                metadatas = list(payload.get("metadatas", []) or [])
+                if documents and len(metadatas) < len(documents):
+                    metadatas.extend({} for _ in range(len(documents) - len(metadatas)))
+            if not documents:
+                # Fallback for simplified collection implementations.
+                all_docs_map: dict[str, tuple[str, dict[str, Any]]] = {}
+                queries = [
+                    "research information data",
+                    "document text content",
+                    "checkpoint summary report",
+                    "findings results analysis",
+                ]
+                for query in queries:
+                    if len(all_docs_map) >= max_docs:
+                        break
+                    try:
+                        results = self.memory_store.search(query, k=max_docs)
+                    except Exception as e:
+                        logger.debug("BM25 fallback query failed (%s): %s", query, e)
+                        continue
                     if not results or not results.get("documents"):
                         continue
-
-                    doc_ids = results.get("ids", [])[0] if results.get("ids") else []
-                    documents = results["documents"][0]
-                    metadatas = (
+                    query_ids = results.get("ids", [])[0] if results.get("ids") else []
+                    query_docs = results["documents"][0]
+                    query_meta = (
                         results["metadatas"][0]
                         if results.get("metadatas")
-                        else [{}] * len(documents)
+                        else [{}] * len(query_docs)
                     )
+                    for doc_id, doc, meta in zip(query_ids, query_docs, query_meta):
+                        normalized_id = (
+                            str(doc_id) if doc_id else f"doc_{len(all_docs_map)}"
+                        )
+                        all_docs_map.setdefault(
+                            normalized_id,
+                            (str(doc), dict(meta or {})),
+                        )
+                        if len(all_docs_map) >= max_docs:
+                            break
+                doc_ids = list(all_docs_map.keys())
+                documents = [item[0] for item in all_docs_map.values()]
+                metadatas = [item[1] for item in all_docs_map.values()]
 
-                    # Add documents, avoiding duplicates
-                    for doc_id, doc, meta in zip(doc_ids, documents, metadatas):
-                        if doc_id not in all_doc_ids:
-                            all_doc_ids.add(doc_id)
-                            all_documents.append(doc)
-                            all_metadatas.append(meta)
-                            doc_id_to_index[doc_id] = len(all_documents) - 1
-                except Exception as e:
-                    logger.debug(
-                        f"Error in BM25 document retrieval query '{query}': {e}"
-                    )
-                    continue
-
-            if not all_documents:
+            if not documents:
                 return [], [], []
 
-            # Filter by task if specified
+            if len(documents) > max_docs:
+                doc_ids = doc_ids[:max_docs]
+                documents = documents[:max_docs]
+                metadatas = metadatas[:max_docs]
+
+            if len(doc_ids) < len(documents):
+                doc_ids.extend(f"doc_{i}" for i in range(len(doc_ids), len(documents)))
+
             if task_name:
-                filtered = []
-                filtered_ids = []
-                filtered_metas = []
-                for doc_id, idx in doc_id_to_index.items():
-                    meta = all_metadatas[idx]
+                filtered_documents: list[str] = []
+                filtered_ids: list[str] = []
+                filtered_metas: list[dict[str, Any]] = []
+                for doc_id, doc, meta in zip(doc_ids, documents, metadatas):
                     if meta.get("task") == task_name:
-                        filtered.append(all_documents[idx])
+                        filtered_documents.append(doc)
                         filtered_ids.append(doc_id)
                         filtered_metas.append(meta)
-                return filtered, filtered_ids, filtered_metas
+                return filtered_documents, filtered_ids, filtered_metas
 
-            return all_documents, list(all_doc_ids), all_metadatas
+            return documents, doc_ids, metadatas
         except Exception as e:
             logger.warning(f"Error getting documents for BM25: {e}")
             return [], [], []
@@ -431,6 +526,15 @@ class HybridRetriever:
                 results = [r for r in results if r["metadata"].get("task") == task_name]
             return results
 
+        if self.langchain_retrieval_enabled:
+            langchain_results = self._retrieve_with_langchain_ensemble(
+                query=query,
+                k=k,
+                task_name=task_name,
+            )
+            if langchain_results:
+                return langchain_results
+
         # Perform both searches
         # Get more results from each method to have better fusion
         vector_results = self._vector_search(query, k=k * 2)
@@ -451,6 +555,68 @@ class HybridRetriever:
 
         # Return top k
         return fused_results[:k]
+
+    def _retrieve_with_langchain_ensemble(
+        self, *, query: str, k: int, task_name: str | None
+    ) -> list[dict[str, Any]]:
+        """Use LangChain EnsembleRetriever while preserving the project return schema."""
+        if not self.langchain_retrieval_enabled:
+            return []
+
+        try:
+            expanded_k = max(k * 2, 10)
+            vector_retriever = _VectorLangChainRetriever(
+                hybrid=self,
+                k=expanded_k,
+                task_name=task_name,
+            )
+            bm25_retriever = _BM25LangChainRetriever(
+                hybrid=self,
+                k=expanded_k,
+                task_name=task_name,
+            )
+            ensemble = EnsembleRetriever(
+                retrievers=[vector_retriever, bm25_retriever],
+                weights=[self.vector_weight, self.bm25_weight],
+                c=60,
+            )
+            docs = ensemble.invoke(query)
+            if not docs:
+                return []
+
+            results: list[dict[str, Any]] = []
+            for rank, doc in enumerate(docs[:k], start=1):
+                metadata = dict(getattr(doc, "metadata", {}) or {})
+                if task_name and metadata.get("task") != task_name:
+                    continue
+
+                doc_id = metadata.get("doc_id", f"doc_{rank}")
+                vector_score = float(metadata.get("vector_score", 0.0))
+                bm25_score = float(metadata.get("bm25_score", 0.0))
+                fallback_rrf = 1.0 / (60 + rank)
+                weighted_score = (self.vector_weight * vector_score) + (
+                    self.bm25_weight * bm25_score
+                )
+                fused_score = max(fallback_rrf, weighted_score)
+
+                results.append(
+                    {
+                        "content": getattr(doc, "page_content", ""),
+                        "metadata": metadata,
+                        "doc_id": doc_id,
+                        "vector_score": vector_score,
+                        "bm25_score": bm25_score,
+                        "fused_score": fused_score,
+                        "method": "langchain_ensemble",
+                    }
+                )
+            return results
+        except Exception as e:
+            logger.warning(
+                "LangChain ensemble retrieval failed, using built-in fusion: %s",
+                e,
+            )
+            return []
 
     def invalidate_bm25_index(self):
         """Invalidate BM25 index (call when documents are added/removed)"""

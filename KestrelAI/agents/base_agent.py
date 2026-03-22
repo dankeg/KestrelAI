@@ -5,26 +5,15 @@ Provides clean abstractions and interfaces for all agent types
 
 from __future__ import annotations
 
-import json
-import logging
-import re
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-try:
-    from memory.vector_store import MemoryStore
-    from shared.models import Task
-
-    from .base import LlmWrapper
-except ImportError:
-    from KestrelAI.agents.base import LlmWrapper
-    from KestrelAI.memory.vector_store import MemoryStore
-    from KestrelAI.shared.models import Task
-
-logger = logging.getLogger(__name__)
+from KestrelAI.agents.base import LlmWrapper
+from KestrelAI.memory.vector_store import MemoryStore
+from KestrelAI.shared.models import Task
 
 
 @dataclass
@@ -36,13 +25,17 @@ class AgentState:
     history: deque = field(default_factory=lambda: deque(maxlen=20))
     action_count: int = 0
     think_count: int = 0
+    search_attempt_count: int = 0
     search_count: int = 0
+    zero_result_search_count: int = 0
     summary_count: int = 0
     checkpoint_count: int = 0
     last_checkpoint: str = ""
     checkpoints: list[str] = field(default_factory=list)
     current_focus: str = ""
     search_history: list[dict] = field(default_factory=list)
+    last_step_feedback: str = ""
+    last_step_activity: str = ""
 
     # Loop prevention
     repeated_queries: dict[str, int] = field(default_factory=dict)
@@ -50,6 +43,11 @@ class AgentState:
     consecutive_searches: int = 0
     last_action: str = ""
     action_pattern: list[str] = field(default_factory=lambda: deque(maxlen=10))
+    planner_fallback_count: int = 0
+    consecutive_planner_failures: int = 0
+    search_pathways: list[dict[str, Any]] = field(default_factory=list)
+    pathway_query_map: dict[str, str] = field(default_factory=dict)
+    pathway_context_key: str = ""
 
     def is_in_loop(self, max_repeats: int = 3) -> bool:
         """Check if agent is stuck in a repetitive loop"""
@@ -83,6 +81,27 @@ class AgentState:
             self.consecutive_thinks = 0
             self.consecutive_searches = 0
 
+    def register_pathway_query(self, canonical_query: str, pathway_id: str) -> None:
+        """Associate a canonical query with a pathway for later outcome tracking."""
+        if canonical_query and pathway_id:
+            self.pathway_query_map[canonical_query] = pathway_id
+
+    def pathway_for_query(self, canonical_query: str) -> str:
+        """Look up the pathway associated with a canonical query."""
+        return str(self.pathway_query_map.get(canonical_query, "") or "")
+
+    def record_pathway_attempt(self, pathway_id: str, *, hit: bool = False) -> None:
+        """Update attempt/hit counters for a tracked pathway."""
+        if not pathway_id:
+            return
+        for pathway in self.search_pathways:
+            if str(pathway.get("id", "")) != pathway_id:
+                continue
+            pathway["attempt_count"] = int(pathway.get("attempt_count", 0) or 0) + 1
+            if hit:
+                pathway["hit_count"] = int(pathway.get("hit_count", 0) or 0) + 1
+            break
+
 
 class BaseAgent(ABC):
     """Abstract base class for all KestrelAI agents"""
@@ -115,33 +134,12 @@ class BaseAgent(ABC):
         pass
 
     def _chat(self, messages: list[dict]) -> str:
-        """Send chat request to LLM"""
+        """Send chat request, preferring LangChain adapter when available."""
         self.metrics["total_llm_calls"] += 1
+        adapter = getattr(self, "langchain_adapter", None)
+        if adapter is not None:
+            return adapter.chat(messages)
         return self.llm.chat(messages)
-
-    def _json_from(self, text: str) -> dict | None:
-        """Parse JSON from text with fallback patterns"""
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            # Try to extract from markdown code blocks
-            m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-            if m:
-                try:
-                    return json.loads(m.group(1))
-                except json.JSONDecodeError:
-                    pass
-
-            # Try first brace pattern
-            m = re.search(r"\{.*?\}", text, re.DOTALL)
-            if m:
-                try:
-                    return json.loads(m.group(0))
-                except json.JSONDecodeError:
-                    pass
-
-        logger.warning(f"No valid JSON found in response. Response text: {text}")
-        return None
 
     def _add_to_rag(
         self,
@@ -189,11 +187,16 @@ class ResearchAgent(BaseAgent):
                 "searches": [],
                 "search_history": [],
                 "action_count": 0,
+                "search_attempt_count": 0,
                 "search_count": 0,
+                "zero_result_search_count": 0,
                 "think_count": 0,
                 "summary_count": 0,
                 "checkpoint_count": 0,
                 "current_focus": "",
+                "planner_fallback_count": 0,
+                "consecutive_planner_failures": 0,
+                "search_pathways": [],
             }
 
         state = self._state[task_name]
@@ -201,11 +204,16 @@ class ResearchAgent(BaseAgent):
             "searches": list(state.queries),
             "search_history": state.search_history,
             "action_count": state.action_count,
+            "search_attempt_count": state.search_attempt_count,
             "search_count": state.search_count,
+            "zero_result_search_count": state.zero_result_search_count,
             "think_count": state.think_count,
             "summary_count": state.summary_count,
             "checkpoint_count": state.checkpoint_count,
             "current_focus": state.current_focus,
+            "planner_fallback_count": state.planner_fallback_count,
+            "consecutive_planner_failures": state.consecutive_planner_failures,
+            "search_pathways": state.search_pathways,
         }
 
     def get_metrics(self) -> dict[str, Any]:
@@ -226,10 +234,17 @@ class ResearchAgent(BaseAgent):
         for state in self._state.values():
             state.action_count = 0
             state.think_count = 0
+            state.search_attempt_count = 0
             state.search_count = 0
+            state.zero_result_search_count = 0
             state.summary_count = 0
             state.checkpoint_count = 0
             state.search_history.clear()
+            state.planner_fallback_count = 0
+            state.consecutive_planner_failures = 0
+            state.search_pathways.clear()
+            state.pathway_query_map.clear()
+            state.pathway_context_key = ""
 
 
 class OrchestratorAgent(BaseAgent):

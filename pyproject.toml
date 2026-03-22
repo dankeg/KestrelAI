@@ -13,6 +13,10 @@ panel = "^1.8.0"
 
 # Agent service dependencies
 ollama = { version = "^0.5.3", optional = true }
+langchain = { version = "^0.3.27", optional = true }
+langgraph = { version = "^0.6.6", optional = true }
+langchain-openai = { version = "^0.3.35", optional = true }
+langchain-ollama = { version = "^0.3.8", optional = true }
 numpy = { version = "^1.24,<2", optional = true }
 chromadb = { version = "^0.4.24", optional = true }
 sentence-transformers = { version = "^2.5.1", optional = true }
@@ -37,6 +41,10 @@ websockets = { version = "^12.0", optional = true }
 [tool.poetry.extras]
 agent = [
     "ollama",
+    "langchain",
+    "langgraph",
+    "langchain-openai",
+    "langchain-ollama",
     "numpy",
     "chromadb",
     "sentence-transformers",
@@ -57,6 +65,10 @@ backend = [
 ]
 all = [
     "ollama",
+    "langchain",
+    "langgraph",
+    "langchain-openai",
+    "langchain-ollama",
     "numpy",
     "chromadb",
     "sentence-transformers",
@@ -120,4 +132,3 @@ ignore = ["E402", "E722", "N815", "E501", "N999", "W291", "UP038", "N806", "F401
 "KestrelAI/shared/models.py" = ["N815"]  # Allow mixedCase for Pydantic model fields
 "**/__init__.py" = ["N999"]  # Allow invalid module names in __init__.py files
 "KestrelAI/agents/web_research_agent.py" = ["N806"]  # Allow uppercase constants in functions
-"KestrelAI/dashboard.py" = ["F401"]  # Allow unused imports (may be used dynamically)

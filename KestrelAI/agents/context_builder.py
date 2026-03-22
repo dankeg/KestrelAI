@@ -7,7 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from shared.models import Task
+    from KestrelAI.shared.models import Task
 
     from .base_agent import AgentState
     from .context_manager import ContextManager, TokenBudget
@@ -37,9 +37,9 @@ class ContextBuilder:
 
     def build_context(self, task: "Task", state: "AgentState") -> str:
         """Build context for the agent with token-aware management"""
-        # Use new context manager if available, otherwise fall back to old method
+        # Use token-aware context manager if available, otherwise use basic context.
         if not self.context_management_enabled:
-            return self._build_context_legacy(task, state)
+            return self._build_context_basic(task, state)
 
         try:
             # Prepare components for context manager
@@ -50,6 +50,10 @@ class ContextBuilder:
                 components[
                     "subtask"
                 ] = f"{self.config.subtask_description}\nSuccess Criteria: {self.config.success_criteria}"
+                if self.config.orchestrator_guidance:
+                    components[
+                        "orchestrator_guidance"
+                    ] = self.config.orchestrator_guidance
                 if self.config.previous_findings:
                     # Replace URLs with flags in previous findings
                     (
@@ -134,13 +138,13 @@ class ContextBuilder:
 
         except Exception as e:
             logger.error(
-                f"Error in context management, falling back to legacy: {e}",
+                f"Error in context management, falling back to basic mode: {e}",
                 exc_info=True,
             )
-            return self._build_context_legacy(task, state)
+            return self._build_context_basic(task, state)
 
-    def _build_context_legacy(self, task: "Task", state: "AgentState") -> str:
-        """Legacy context building method (fallback)"""
+    def _build_context_basic(self, task: "Task", state: "AgentState") -> str:
+        """Basic context building method used when token-aware mode is unavailable."""
         context_parts = [f"Task: {task.description}"]
 
         # Add subtask-specific context
@@ -151,6 +155,10 @@ class ContextBuilder:
                     f"Success Criteria: {self.config.success_criteria}",
                 ]
             )
+            if self.config.orchestrator_guidance:
+                context_parts.append(
+                    f"Orchestrator guidance: {self.config.orchestrator_guidance}"
+                )
             if self.config.previous_findings:
                 # Replace URLs with flags in previous findings
                 findings_with_flags, _ = self.url_flag_manager.replace_urls_with_flags(

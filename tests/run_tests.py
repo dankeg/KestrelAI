@@ -21,7 +21,7 @@ from tests.utils.test_config import (
 
 def run_pytest(args: list[str], verbose: bool = True) -> int:
     """Run pytest with given arguments."""
-    cmd = ["python", "-m", "pytest"] + args
+    cmd = [sys.executable, "-m", "pytest"] + args
 
     if verbose:
         cmd.append("-v")
@@ -76,7 +76,7 @@ def main():
         help="Skip service availability check",
     )
     parser.add_argument(
-        "--verbose", action="store_true", default=True, help="Verbose output"
+        "--verbose", action="store_true", default=False, help="Verbose output"
     )
     parser.add_argument("--quiet", action="store_true", help="Quiet output")
     parser.add_argument(
@@ -100,9 +100,10 @@ def main():
     # Build pytest arguments
     pytest_args = []
 
-    # Add category markers
-    for category in categories:
-        pytest_args.extend(["-m", category])
+    # Multiple -m flags are ANDed by pytest. Build one OR expression instead.
+    if categories and len(categories) != len(TEST_CATEGORIES):
+        marker_expr = " or ".join(categories)
+        pytest_args.extend(["-m", marker_expr])
 
     # Add coverage if requested
     if args.coverage:

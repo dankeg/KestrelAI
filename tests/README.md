@@ -46,46 +46,46 @@ tests/
 
 ```bash
 # Run all tests
-python tests/run_tests.py
+poetry run python tests/run_tests.py
 
 # Run specific test categories
-python tests/run_tests.py unit integration
-python tests/run_tests.py api frontend
-python tests/run_tests.py e2e performance
+poetry run python tests/run_tests.py unit integration
+poetry run python tests/run_tests.py api frontend
+poetry run python tests/run_tests.py e2e performance
 
 # Run with coverage
-python tests/run_tests.py --coverage
+poetry run python tests/run_tests.py --coverage
 
 # Run in parallel
-python tests/run_tests.py --parallel
+poetry run python tests/run_tests.py --parallel
 
 # Skip service check
-python tests/run_tests.py --skip-service-check
+poetry run python tests/run_tests.py --skip-service-check
 ```
 
 ### Basic pytest Commands
 
 ```bash
 # Run all tests
-pytest
+poetry run pytest
 
 # Run specific test categories
-pytest -m unit
-pytest -m integration
-pytest -m api
-pytest -m frontend
-pytest -m e2e
-pytest -m performance
+poetry run pytest -m unit
+poetry run pytest -m integration
+poetry run pytest -m api
+poetry run pytest -m frontend
+poetry run pytest -m e2e
+poetry run pytest -m performance
 
 # Run specific test files
-pytest tests/unit/test_core.py
-pytest tests/api/test_backend_api.py
+poetry run pytest tests/unit/test_core.py
+poetry run pytest tests/api/test_backend_api.py
 
 # Run with verbose output
-pytest -v
+poetry run pytest -v
 
 # Run with coverage
-pytest --cov=KestrelAI --cov-report=html
+poetry run pytest --cov=KestrelAI --cov-report=html
 ```
 
 ### Test Markers
@@ -124,9 +124,12 @@ python tests/utils/check_services.py
 Tests use the following environment variables:
 
 - `PYTHONPATH`: Set to project root
+- `OPENAI_BASE_URL`: OpenAI-compatible model endpoint
+- `LLM_PROVIDER`: Usually `openai_compatible`
+- `MODEL_NAME`: Selected model identifier
+- `MAX_CONTEXT_TOKENS`: Internal context limit for the agent/orchestrator
 - `REDIS_HOST`: Redis server host
 - `REDIS_PORT`: Redis server port
-- `OLLAMA_BASE_URL`: Ollama server URL
 - `SEARXNG_URL`: SearXNG server URL
 
 ### Test Configuration
@@ -212,7 +215,7 @@ def test_with_config():
 
 Tests are automatically run in CI/CD pipelines with the following configuration:
 
-- Python 3.9+
+- Python 3.11
 - pytest with coverage reporting
 - Service availability checking
 - Performance regression detection

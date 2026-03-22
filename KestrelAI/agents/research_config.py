@@ -16,6 +16,7 @@ DEBUG = True
 CONTEXT_WINDOW = 60
 CHECKPOINT_FREQ = 5
 MAX_SNIPPET_LENGTH = 3000
+MAX_ACTIONS_PER_STEP = max(1, int(os.getenv("RESEARCH_MAX_ACTIONS_PER_STEP", "1")))
 
 
 @dataclass
@@ -29,6 +30,8 @@ class ResearchConfig:
     checkpoint_freq: int = CHECKPOINT_FREQ
     max_snippet_length: int = MAX_SNIPPET_LENGTH
     debug: bool = DEBUG
+    max_context_tokens: int | None = None
+    max_actions_per_step: int = MAX_ACTIONS_PER_STEP
 
     # Subtask-specific settings
     is_subtask_agent: bool = False
@@ -38,6 +41,8 @@ class ResearchConfig:
     previous_reports: list[str] = field(
         default_factory=list
     )  # Previous reports to build upon
+    orchestrator_guidance: str = ""
+    orchestrator_control_hints: dict[str, Any] = field(default_factory=dict)
 
     # MCP settings
     use_mcp: bool = False

@@ -6,16 +6,32 @@ quality-focused fact preservation for research information.
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel, Field
+
+from KestrelAI.shared.research_utils import timeouts_disabled
+
+try:
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+except ImportError:  # pragma: no cover - dependency-gated path
+    ChatPromptTemplate = None
+    StrOutputParser = None
+
 try:
     from .context_manager import TokenCounter
+    from .langchain_adapter import LangChainChatAdapter
+    from .structured_parsing import parse_to_schema
 except ImportError:
     from KestrelAI.agents.context_manager import TokenCounter
+    from KestrelAI.agents.langchain_adapter import LangChainChatAdapter
+    from KestrelAI.agents.structured_parsing import parse_to_schema
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +92,19 @@ class ExtractedFacts:
         merged.amounts = list(set(self.amounts + other.amounts))
         merged.eligibility = list(set(self.eligibility + other.eligibility))
         return merged
+
+
+class _ExtractedFactsSchema(BaseModel):
+    """Structured output schema for fact extraction."""
+
+    deadlines: list[str] = Field(default_factory=list)
+    dates: list[str] = Field(default_factory=list)
+    requirements: list[str] = Field(default_factory=list)
+    contact_info: list[str] = Field(default_factory=list)
+    urls: list[str] = Field(default_factory=list)
+    programs: list[str] = Field(default_factory=list)
+    amounts: list[str] = Field(default_factory=list)
+    eligibility: list[str] = Field(default_factory=list)
 
 
 class MultiLevelSummarizer:
@@ -146,9 +175,74 @@ class MultiLevelSummarizer:
         self.counter = token_counter
         self.levels = summary_levels or self.DEFAULT_LEVELS
         self.extract_facts = extract_facts
+        self.langchain_adapter: LangChainChatAdapter | None = None
+        self._fact_extraction_chain = None
+        self._summary_chain = None
 
         # Sort levels by compression ratio (most detailed first)
         self.levels.sort(key=lambda x: x.compression_ratio, reverse=True)
+
+        if (
+            ChatPromptTemplate is not None
+            and StrOutputParser is not None
+            and self._supports_langchain_adapter(llm)
+        ):
+            try:
+                self.langchain_adapter = LangChainChatAdapter.from_llm(llm)
+                parser = StrOutputParser()
+                self._fact_extraction_chain = (
+                    ChatPromptTemplate.from_messages(
+                        [
+                            (
+                                "system",
+                                "You are a fact extraction system. Extract key facts accurately.\n"
+                                "Return facts as structured JSON-compatible content.\n"
+                                "Every field must be a list of strings, even if there is only one item.\n"
+                                "Never return bare strings for list fields.",
+                            ),
+                            ("human", "{content}"),
+                        ]
+                    )
+                    | self.langchain_adapter.client
+                    | parser
+                )
+                self._summary_chain = (
+                    ChatPromptTemplate.from_messages(
+                        [
+                            ("system", "{system_prompt}"),
+                            ("human", "{user_prompt}"),
+                        ]
+                    )
+                    | self.langchain_adapter.client
+                    | parser
+                )
+            except Exception as e:
+                logger.debug(
+                    "LangChain summarizer chains unavailable: %s",
+                    e,
+                )
+                self.langchain_adapter = None
+                self._fact_extraction_chain = None
+                self._summary_chain = None
+
+    @staticmethod
+    def _supports_langchain_adapter(llm: Any) -> bool:
+        """Only enable LangChain chains for actual configured LLM wrappers.
+
+        Bare mocks and minimal test doubles often expose a ``chat`` method but not a
+        real provider/model/host configuration. Treat those as non-LangChain inputs
+        so summarization stays fully local and deterministic in tests/fallback paths.
+        """
+        raw_model = getattr(llm, "model", None)
+        raw_provider = getattr(llm, "provider", None)
+        raw_host = getattr(llm, "host", None)
+        if not isinstance(raw_host, str):
+            client = getattr(llm, "client", None)
+            client_host = getattr(client, "host", None) if client is not None else None
+            raw_host = client_host if isinstance(client_host, str) else None
+        return isinstance(raw_model, str) and (
+            isinstance(raw_provider, str) or isinstance(raw_host, str)
+        )
 
     def create_summary_hierarchy(
         self, content: str, preserve_facts: bool = True
@@ -207,6 +301,50 @@ class MultiLevelSummarizer:
 
         return {"summaries": summaries, "facts": extracted_facts}
 
+    async def create_summary_hierarchy_async(
+        self, content: str, preserve_facts: bool = True
+    ) -> dict[str, Any]:
+        """
+        Async variant of create_summary_hierarchy.
+        Uses async chain invocations so upstream cancellation can propagate.
+        """
+        if not content:
+            return {"summaries": {}, "facts": ExtractedFacts()}
+
+        extracted_facts = ExtractedFacts()
+        if self.extract_facts and preserve_facts:
+            extracted_facts = await self._extract_facts_async(content)
+            logger.debug(
+                "Extracted %s deadlines, %s URLs, %s programs",
+                len(extracted_facts.deadlines),
+                len(extracted_facts.urls),
+                len(extracted_facts.programs),
+            )
+
+        summaries: dict[str, str] = {}
+        current_content = content
+        summaries["detailed"] = content
+
+        for level in self.levels[1:]:
+            if level.compression_ratio <= 0:
+                continue
+
+            target_tokens = int(
+                self.counter.count_tokens(current_content) * level.compression_ratio
+            )
+
+            if target_tokens < 10:
+                summaries[level.name] = current_content
+                continue
+
+            summary = await self._summarize_with_facts_async(
+                current_content, target_tokens, level, extracted_facts
+            )
+            summaries[level.name] = summary
+            current_content = summary
+
+        return {"summaries": summaries, "facts": extracted_facts}
+
     def _extract_facts(self, content: str) -> ExtractedFacts:
         """
         Extract key facts from research content using LLM.
@@ -220,140 +358,96 @@ class MultiLevelSummarizer:
         if not content:
             return ExtractedFacts()
 
-        extraction_prompt = """Extract key facts from this research content. Return ONLY a JSON object with these fields:
-{{
-  "deadlines": ["list of deadlines mentioned"],
-  "dates": ["list of important dates"],
-  "requirements": ["list of requirements, eligibility criteria"],
-  "contact_info": ["list of contact information, emails, phone numbers"],
-  "urls": ["list of URLs mentioned"],
-  "programs": ["list of program names, grant names"],
-  "amounts": ["list of funding amounts, dollar amounts"],
-  "eligibility": ["list of eligibility criteria"]
-}}
+        if self._fact_extraction_chain is None:
+            return self._extract_facts_regex(content)
 
-Extract ALL instances of these facts. Be thorough. Preserve exact wording for critical information.
-
-Content:
-{content}
-
-JSON:"""
-
-        response = None
+        extraction_input = (
+            "Extract all key facts from this research content.\n"
+            "Be thorough and preserve exact wording for critical details.\n\n"
+            "Return the following fields as lists of strings: "
+            "deadlines, dates, requirements, contact_info, urls, programs, amounts, eligibility.\n"
+            f"Content:\n{content[:4000]}"
+        )
         try:
-            response = self.llm.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": "You are a fact extraction system. Extract key facts accurately and return only valid JSON.",
-                    },
-                    {
-                        "role": "user",
-                        "content": extraction_prompt.format(content=content[:4000]),
-                    },  # Limit content size
-                ]
+            extracted = self._fact_extraction_chain.invoke(
+                {"content": extraction_input}
             )
+            extracted = parse_to_schema(extracted, _ExtractedFactsSchema)
 
-            # Try multiple strategies to extract JSON from response
-            facts_dict = self._extract_json_from_response(response)
-            if facts_dict:
-                return ExtractedFacts(
-                    deadlines=facts_dict.get("deadlines", []),
-                    dates=facts_dict.get("dates", []),
-                    requirements=facts_dict.get("requirements", []),
-                    contact_info=facts_dict.get("contact_info", []),
-                    urls=facts_dict.get("urls", []),
-                    programs=facts_dict.get("programs", []),
-                    amounts=facts_dict.get("amounts", []),
-                    eligibility=facts_dict.get("eligibility", []),
-                )
-            else:
-                # JSON extraction failed, log the response for debugging
-                logger.warning(
-                    f"Could not extract JSON from response, using regex fallback. Response text: {response}"
-                )
+            return ExtractedFacts(
+                deadlines=extracted.deadlines,
+                dates=extracted.dates,
+                requirements=extracted.requirements,
+                contact_info=extracted.contact_info,
+                urls=extracted.urls,
+                programs=extracted.programs,
+                amounts=extracted.amounts,
+                eligibility=extracted.eligibility,
+            )
         except Exception as e:
-            # Capture exception details for better debugging
-            exception_type = type(e).__name__
-            exception_msg = str(e)
-            response_text = (
-                response if response is not None else "Response not available"
-            )
-
             logger.warning(
-                f"Error extracting facts (exception: {exception_type}), using regex fallback. "
-                f"Error message: {exception_msg}. Response text: {response_text}"
+                "Error extracting facts with LangChain structured output, using regex fallback: %s",
+                e,
             )
 
         # Fallback: regex-based extraction
         return self._extract_facts_regex(content)
 
-    def _extract_json_from_response(self, text: str) -> dict[str, Any] | None:
-        """
-        Extract JSON from LLM response using multiple strategies.
+    async def _extract_facts_async(self, content: str) -> ExtractedFacts:
+        """Async variant of _extract_facts with regex fallback."""
+        if not content:
+            return ExtractedFacts()
 
-        This handles cases where the LLM response may contain:
-        - Plain JSON
-        - JSON in markdown code blocks (```json ... ```)
-        - JSON with surrounding text
-        - Multiple JSON objects (takes the first valid one)
+        if self._fact_extraction_chain is None:
+            return self._extract_facts_regex(content)
 
-        Args:
-            text: Response text from LLM
-
-        Returns:
-            Parsed JSON dictionary, or None if no valid JSON found
-        """
-        if not text:
-            return None
-
-        # Strategy 1: Try parsing the entire response as JSON
+        extraction_input = (
+            "Extract all key facts from this research content.\n"
+            "Be thorough and preserve exact wording for critical details.\n\n"
+            "Return the following fields as lists of strings: "
+            "deadlines, dates, requirements, contact_info, urls, programs, amounts, eligibility.\n"
+            f"Content:\n{content[:4000]}"
+        )
+        raw_timeout = float(os.getenv("AGENT_FACT_EXTRACTION_TIMEOUT_SECONDS", "20"))
+        if timeouts_disabled() or raw_timeout <= 0:
+            fact_extraction_timeout_seconds: float | None = None
+        else:
+            fact_extraction_timeout_seconds = max(1.0, raw_timeout)
         try:
-            return json.loads(text.strip())
-        except json.JSONDecodeError:
-            pass
+            extraction_call = self._fact_extraction_chain.ainvoke(
+                {"content": extraction_input}
+            )
+            if fact_extraction_timeout_seconds is None:
+                extracted = await extraction_call
+            else:
+                extracted = await asyncio.wait_for(
+                    extraction_call,
+                    timeout=fact_extraction_timeout_seconds,
+                )
+            extracted = parse_to_schema(extracted, _ExtractedFactsSchema)
 
-        # Strategy 2: Try extracting from markdown code blocks (```json ... ```)
-        json_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if json_block_match:
-            try:
-                return json.loads(json_block_match.group(1))
-            except json.JSONDecodeError:
-                pass
-
-        # Strategy 3: Try non-greedy regex to find first complete JSON object
-        # This handles nested braces correctly by finding balanced braces
-        brace_count = 0
-        start_idx = None
-
-        for i, char in enumerate(text):
-            if char == "{":
-                if start_idx is None:
-                    start_idx = i
-                brace_count += 1
-            elif char == "}":
-                brace_count -= 1
-                if brace_count == 0 and start_idx is not None:
-                    # Found a complete JSON object
-                    json_str = text[start_idx : i + 1]
-                    try:
-                        return json.loads(json_str)
-                    except json.JSONDecodeError:
-                        # Continue searching for another JSON object
-                        start_idx = None
-                        brace_count = 0
-                        continue
-
-        # Strategy 4: Fallback to greedy regex (original behavior, but with better error handling)
-        json_match = re.search(r"\{.*\}", text, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group(0))
-            except json.JSONDecodeError as e:
-                logger.debug(f"Greedy regex matched but JSON invalid: {str(e)[:100]}")
-                pass
-
-        return None
+            return ExtractedFacts(
+                deadlines=extracted.deadlines,
+                dates=extracted.dates,
+                requirements=extracted.requirements,
+                contact_info=extracted.contact_info,
+                urls=extracted.urls,
+                programs=extracted.programs,
+                amounts=extracted.amounts,
+                eligibility=extracted.eligibility,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Async fact extraction timed out after %.1fs; using regex fallback",
+                fact_extraction_timeout_seconds,
+            )
+            return self._extract_facts_regex(content)
+        except Exception as e:
+            logger.warning(
+                "Error extracting facts with async LangChain structured output, using regex fallback: %s",
+                e,
+            )
+            return self._extract_facts_regex(content)
 
     def _extract_facts_regex(self, content: str) -> ExtractedFacts:
         """Fallback regex-based fact extraction."""
@@ -415,11 +509,9 @@ JSON:"""
         )
 
         try:
-            summary = self.llm.chat(
-                [
-                    {"role": "system", "content": self._get_system_prompt(level)},
-                    {"role": "user", "content": prompt},
-                ]
+            summary = self._generate_summary(
+                system_prompt=self._get_system_prompt(level),
+                user_prompt=prompt,
             )
 
             # Verify summary is within reasonable bounds
@@ -445,6 +537,42 @@ JSON:"""
                 truncated = f"{truncated}\n\n--- Key Facts ---\n{facts_text}"
             return truncated
 
+    async def _summarize_with_facts_async(
+        self,
+        content: str,
+        target_tokens: int,
+        level: SummaryLevel,
+        facts: ExtractedFacts,
+    ) -> str:
+        """Async variant of _summarize_with_facts."""
+        facts_tokens = int(target_tokens * 0.2)
+        summary_target = target_tokens - facts_tokens
+
+        prompt = self._build_summarization_prompt_with_facts(
+            content, summary_target, level, facts
+        )
+
+        try:
+            summary = await self._generate_summary_async(
+                system_prompt=self._get_system_prompt(level),
+                user_prompt=prompt,
+            )
+            summary_tokens = self.counter.count_tokens(summary)
+            if summary_tokens > summary_target * 1.5:
+                summary = self.counter.truncate_to_tokens(summary, summary_target)
+
+            facts_text = facts.to_text()
+            if facts_text:
+                summary = f"{summary.strip()}\n\n--- Key Facts ---\n{facts_text}"
+            return summary.strip()
+        except Exception as e:
+            logger.error("Error during async summarization: %s", e)
+            truncated = self.counter.truncate_to_tokens(content, summary_target)
+            facts_text = facts.to_text()
+            if facts_text:
+                truncated = f"{truncated}\n\n--- Key Facts ---\n{facts_text}"
+            return truncated
+
     def _summarize(self, content: str, target_tokens: int, level: SummaryLevel) -> str:
         """
         Summarize content to target token count (without fact extraction).
@@ -460,11 +588,9 @@ JSON:"""
         prompt = self._build_summarization_prompt(content, target_tokens, level)
 
         try:
-            summary = self.llm.chat(
-                [
-                    {"role": "system", "content": self._get_system_prompt(level)},
-                    {"role": "user", "content": prompt},
-                ]
+            summary = self._generate_summary(
+                system_prompt=self._get_system_prompt(level),
+                user_prompt=prompt,
             )
 
             # Verify summary is within reasonable bounds
@@ -608,6 +734,31 @@ Content to summarize:
 Summary (MUST include all facts listed above):"""
 
         return prompt
+
+    def _generate_summary(self, *, system_prompt: str, user_prompt: str) -> str:
+        """Generate summary text through LangChain."""
+        if self._summary_chain is None:
+            raise RuntimeError("LangChain summary chain unavailable")
+
+        return self._summary_chain.invoke(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+        )
+
+    async def _generate_summary_async(
+        self, *, system_prompt: str, user_prompt: str
+    ) -> str:
+        """Async variant of _generate_summary."""
+        if self._summary_chain is None:
+            raise RuntimeError("LangChain summary chain unavailable")
+        return await self._summary_chain.ainvoke(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+        )
 
     def retrieve_adaptive(
         self,

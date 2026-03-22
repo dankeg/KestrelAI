@@ -18,11 +18,12 @@ except ImportError:
 class TestLlmWrapper:
     """Test LLM wrapper functionality."""
 
-    @patch("ollama.Client")
-    def test_llm_initialization(self, mock_client_class, test_config):
+    @patch("KestrelAI.agents.base.LangChainChatAdapter")
+    def test_llm_initialization(self, mock_adapter_class, test_config):
         """Test LLM wrapper initialization."""
-        mock_client = Mock()
-        mock_client_class.return_value = mock_client
+        mock_adapter = Mock()
+        mock_adapter.client = Mock()
+        mock_adapter_class.return_value = mock_adapter
 
         llm = LlmWrapper(
             model=test_config["model_name"], host=test_config["ollama_host"]
@@ -30,13 +31,13 @@ class TestLlmWrapper:
         assert llm.model == test_config["model_name"]
         assert llm.client is not None
 
-    @patch("ollama.Client")
-    def test_llm_chat_success(self, mock_client_class, test_config):
+    @patch("KestrelAI.agents.base.LangChainChatAdapter")
+    def test_llm_chat_success(self, mock_adapter_class, test_config):
         """Test successful LLM chat."""
-        # Mock successful response
-        mock_client = Mock()
-        mock_client.chat.return_value = {"message": {"content": "Test response"}}
-        mock_client_class.return_value = mock_client
+        mock_adapter = Mock()
+        mock_adapter.client = Mock()
+        mock_adapter.chat.return_value = "Test response"
+        mock_adapter_class.return_value = mock_adapter
 
         llm = LlmWrapper(
             model=test_config["model_name"], host=test_config["ollama_host"]
@@ -44,15 +45,15 @@ class TestLlmWrapper:
 
         result = llm.chat([{"role": "user", "content": "Hello"}])
         assert result == "Test response"
-        mock_client.chat.assert_called_once()
+        mock_adapter.chat.assert_called_once()
 
-    @patch("ollama.Client")
-    def test_llm_chat_failure(self, mock_client_class, test_config):
+    @patch("KestrelAI.agents.base.LangChainChatAdapter")
+    def test_llm_chat_failure(self, mock_adapter_class, test_config):
         """Test LLM chat failure handling."""
-        # Mock failed response
-        mock_client = Mock()
-        mock_client.chat.side_effect = Exception("Connection failed")
-        mock_client_class.return_value = mock_client
+        mock_adapter = Mock()
+        mock_adapter.client = Mock()
+        mock_adapter.chat.side_effect = Exception("Connection failed")
+        mock_adapter_class.return_value = mock_adapter
 
         llm = LlmWrapper(
             model=test_config["model_name"], host=test_config["ollama_host"]
@@ -61,14 +62,15 @@ class TestLlmWrapper:
         with pytest.raises(Exception):
             llm.chat([{"role": "user", "content": "Hello"}])
 
-    @patch("ollama.Client")
+    @patch("KestrelAI.agents.base.LangChainChatAdapter")
     def test_llm_performance(
-        self, mock_client_class, test_config, performance_thresholds
+        self, mock_adapter_class, test_config, performance_thresholds
     ):
         """Test LLM response time performance."""
-        mock_client = Mock()
-        mock_client.chat.return_value = {"message": {"content": "Fast response"}}
-        mock_client_class.return_value = mock_client
+        mock_adapter = Mock()
+        mock_adapter.client = Mock()
+        mock_adapter.chat.return_value = "Fast response"
+        mock_adapter_class.return_value = mock_adapter
 
         llm = LlmWrapper(
             model=test_config["model_name"], host=test_config["ollama_host"]
@@ -91,7 +93,10 @@ class TestRedisClient:
         mock_redis.brpop.return_value = None  # No commands in queue
         mock_redis_class.return_value = mock_redis
 
+        from KestrelAI.shared import redis_utils
         from KestrelAI.shared.redis_utils import RedisConfig
+
+        redis_utils._sync_client = None
 
         client = get_sync_redis_client(RedisConfig(host="localhost", port=6379, db=0))
 
@@ -105,7 +110,10 @@ class TestRedisClient:
         mock_redis = Mock()
         mock_redis_class.return_value = mock_redis
 
+        from KestrelAI.shared import redis_utils
         from KestrelAI.shared.redis_utils import RedisConfig
+
+        redis_utils._sync_client = None
 
         # Test that we can create a Redis client
         client = get_sync_redis_client(RedisConfig(host="localhost", port=6379, db=0))
@@ -123,7 +131,10 @@ class TestRedisClient:
             mock_redis.set.return_value = True
             mock_redis_class.return_value = mock_redis
 
+            from KestrelAI.shared import redis_utils
             from KestrelAI.shared.redis_utils import RedisConfig
+
+            redis_utils._sync_client = None
 
             client = get_sync_redis_client(
                 RedisConfig(host="localhost", port=6379, db=0)

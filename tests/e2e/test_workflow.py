@@ -1,4 +1,5 @@
 # End-to-end tests for complete system
+import os
 import time
 
 import pytest
@@ -13,12 +14,12 @@ class TestEndToEndWorkflow:
     @pytest.fixture
     def api_base_url(self):
         """API base URL for testing."""
-        return "http://localhost:8000/api/v1"
+        return os.getenv("KESTREL_TEST_API_BASE_URL", "http://localhost:8000/api/v1")
 
     @pytest.fixture
     def frontend_url(self):
         """Frontend URL for testing."""
-        return "http://localhost:5173"
+        return os.getenv("KESTREL_TEST_FRONTEND_URL", "http://localhost:5173")
 
     def test_service_connectivity(self, api_base_url, frontend_url):
         """Test that all services are accessible."""
@@ -61,14 +62,14 @@ class TestEndToEndWorkflow:
         assert response.status_code == 200
         created_task = response.json()
         assert created_task["name"] == task_data["name"]
-        assert created_task["status"] == "pending"
+        assert created_task["status"] == "configuring"
 
         # 3. Start task
         response = requests.post(f"{api_base_url}/tasks/{task_id}/start", timeout=10)
         assert response.status_code == 200
 
         # 4. Monitor task progress
-        max_wait_time = 120  # 2 minutes max wait
+        max_wait_time = 240  # 4 minutes max wait (real-model planning can be slow)
         start_time = time.time()
 
         while time.time() - start_time < max_wait_time:

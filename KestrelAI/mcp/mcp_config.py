@@ -27,7 +27,7 @@ class MCPConfig:
     """Main MCP configuration"""
 
     servers: dict[str, MCPServerConfig] = field(default_factory=dict)
-    timeout: int = 30
+    timeout: int = 300
     max_retries: int = 3
     enable_logging: bool = True
     log_level: str = "INFO"
@@ -105,7 +105,7 @@ class MCPConfig:
 
             return cls(
                 servers=servers,
-                timeout=data.get("timeout", 30),
+                timeout=data.get("timeout", 300),
                 max_retries=data.get("max_retries", 3),
                 enable_logging=data.get("enable_logging", True),
                 log_level=data.get("log_level", "INFO"),

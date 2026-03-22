@@ -1,61 +1,57 @@
 import os
 
-import ollama
+from KestrelAI.shared.runtime_settings import (
+    get_default_model_name,
+    resolve_llm_base_url,
+)
+
+from .langchain_adapter import LangChainChatAdapter
 
 
 class LlmWrapper:
     def __init__(
-        self, model: str = "gemma3:27b", temperature: float = 0.6, host: str = None
+        self,
+        model: str = "",
+        temperature: float = 0.6,
+        host: str = None,
+        provider: str | None = None,
+        api_key: str | None = None,
     ):
-        self.model = model
+        self.model = model or get_default_model_name()
         self.temperature = temperature
-        # Prefer an explicit host; fall back to env var; then a safe default.
-        self.host = host or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.client = ollama.Client(host=self.host)
+        self.provider = provider or os.getenv("LLM_PROVIDER", "openai_compatible")
+        self.host = host or resolve_llm_base_url()
+        self.api_key = (
+            api_key or os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
+        )
+        self._adapter = LangChainChatAdapter(
+            model=self.model,
+            temperature=self.temperature,
+            host=self.host,
+            provider=self.provider,
+            api_key=self.api_key,
+        )
+        # Keep `.client` for compatibility with existing call sites/tests.
+        self.client = self._adapter.client
 
     def chat(self, messages: list[dict], stream: bool = False) -> str:
-        """
-        Send chat messages to the LLM and return the response content as a string.
-
-        The Ollama client returns a ChatResponse object with structure:
-        - response.message.content (the actual text response)
-        """
+        """Send chat messages via the LangChain adapter."""
         try:
-            response = self.client.chat(
-                model=self.model,
-                messages=messages,
-                stream=stream,
-                options={"temperature": self.temperature},
-            )
-            if stream:
-                return response
-
-            # Ollama returns a ChatResponse object (or dict in some versions)
-            # The string content is always at response.message.content
-            if hasattr(response, "message"):
-                # ChatResponse object: response.message.content
-                return response.message.content
-            elif isinstance(response, dict) and "message" in response:
-                # Dict response: response['message']['content'] or response['message'].content
-                message = response["message"]
-                if isinstance(message, dict):
-                    return message.get("content", "")
-                elif hasattr(message, "content"):
-                    return message.content
-
-            # Fallback: try direct content access
-            if isinstance(response, dict) and "content" in response:
-                return response["content"]
-
-            raise ValueError(
-                f"Unable to extract content from response. "
-                f"Type: {type(response)}, "
-                f"Has 'message' attr: {hasattr(response, 'message')}, "
-                f"Is dict: {isinstance(response, dict)}, "
-                f"Dict keys: {list(response.keys()) if isinstance(response, dict) else 'N/A'}"
-            )
+            return self._adapter.chat(messages, stream=stream)
         except Exception as e:
-            # Re-raise with more context
             raise RuntimeError(
-                f"LLM chat failed (model: {self.model}, host: {self.host}): {str(e)}"
+                f"LLM chat failed (model: {self.model}, provider: {self.provider}, host: {self.host}): {str(e)}"
             ) from e
+
+    def chat_response(self, messages: list[dict]):
+        """Send chat messages and retain normalized reasoning/tool metadata."""
+        try:
+            return self._adapter.chat_response(messages)
+        except Exception as e:
+            raise RuntimeError(
+                f"LLM chat failed (model: {self.model}, provider: {self.provider}, host: {self.host}): {str(e)}"
+            ) from e
+
+    def get_capabilities(self) -> dict[str, object]:
+        """Return observed runtime capabilities from the adapter."""
+        return self._adapter.get_capabilities()

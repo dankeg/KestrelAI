@@ -1,0 +1,364 @@
+{
+  "task_id": "83d6740f",
+  "prompt": {
+    "id": "authoritative_reu",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budget_minutes": 30
+  },
+  "timings": {
+    "plan_generated_seconds": 22.07
+  },
+  "task": {
+    "id": "83d6740f",
+    "name": "Authoritative REU Validation",
+    "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+    "budgetMinutes": 30,
+    "status": "active",
+    "progress": 0.0,
+    "elapsed": 74,
+    "metrics": {
+      "searchCount": 3,
+      "thinkCount": 0,
+      "summaryCount": 1,
+      "checkpointCount": 0,
+      "webFetchCount": 0,
+      "llmTokensUsed": 0,
+      "errorCount": 0
+    },
+    "research_plan": {
+      "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates (2024-2025), producing a concise and actionable shortlist with clearly labeled uncertainty.",
+      "subtasks": [
+        {
+          "order": 1,
+          "description": "Discover and list all currently active NSF REU programs in AI and machine learning for undergraduates (2024-2025). Focus on identifying programs that explicitly involve undergraduate students and align with AI/ML research.",
+          "success_criteria": "A comprehensive list of all identified NSF REU programs, including program name, PI institution, and a brief description of the research focus. Verify that each program is currently active and targets undergraduates.",
+          "status": "in_progress",
+          "findings": []
+        },
+        {
+          "order": 2,
+          "description": "Analyze the provided arXiv abstracts (1 & 2) to determine if any associated REU opportunities exist or are explicitly mentioned. Investigate if the research aligns with typical REU program goals and student involvement.",
+          "success_criteria": "Confirmation (or denial) of any direct REU opportunities linked to the arXiv abstracts. If no direct REU is found, assess the potential for these projects to be incorporated into existing or new REU programs.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 3,
+          "description": "Verify NSF Funding Opportunity Announcements (FOA) related to AI/ML REU programs (1 & 2). Focus on identifying the specific FOAs and their deadlines.",
+          "success_criteria": "A list of all relevant NSF FOAs (including NSF 24-039 and NSF 24-508) with confirmed deadlines for each.",
+          "status": "pending",
+          "findings": []
+        },
+        {
+          "order": 4,
+          "description": "For each identified FOA, investigate the eligibility criteria for undergraduate students. Determine if the requirements (e.g., degree level, GPA) align with typical REU program requirements.",
+          "success_criteria": "A detailed assessment of the eligibility criteria for each FOA, noting any potential barriers for undergraduate students.",
+          "status": "pending",
+          "findings": []
+        }
+      ],
+      "current_subtask_index": 0,
+      "created_at": 1772995670814
+    },
+    "createdAt": 1772995653302,
+    "updatedAt": 1772995749631,
+    "config": {}
+  },
+  "plan": {
+    "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates (2024-2025), producing a concise and actionable shortlist with clearly labeled uncertainty.",
+    "subtasks": [
+      {
+        "order": 1,
+        "description": "Discover and list all currently active NSF REU programs in AI and machine learning for undergraduates (2024-2025). Focus on identifying programs that explicitly involve undergraduate students and align with AI/ML research.",
+        "success_criteria": "A comprehensive list of all identified NSF REU programs, including program name, PI institution, and a brief description of the research focus. Verify that each program is currently active and targets undergraduates.",
+        "status": "in_progress",
+        "findings": []
+      },
+      {
+        "order": 2,
+        "description": "Analyze the provided arXiv abstracts (1 & 2) to determine if any associated REU opportunities exist or are explicitly mentioned. Investigate if the research aligns with typical REU program goals and student involvement.",
+        "success_criteria": "Confirmation (or denial) of any direct REU opportunities linked to the arXiv abstracts. If no direct REU is found, assess the potential for these projects to be incorporated into existing or new REU programs.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 3,
+        "description": "Verify NSF Funding Opportunity Announcements (FOA) related to AI/ML REU programs (1 & 2). Focus on identifying the specific FOAs and their deadlines.",
+        "success_criteria": "A list of all relevant NSF FOAs (including NSF 24-039 and NSF 24-508) with confirmed deadlines for each.",
+        "status": "pending",
+        "findings": []
+      },
+      {
+        "order": 4,
+        "description": "For each identified FOA, investigate the eligibility criteria for undergraduate students. Determine if the requirements (e.g., degree level, GPA) align with typical REU program requirements.",
+        "success_criteria": "A detailed assessment of the eligibility criteria for each FOA, noting any potential barriers for undergraduate students.",
+        "status": "pending",
+        "findings": []
+      }
+    ],
+    "current_subtask_index": 0,
+    "created_at": 1772995670814
+  },
+  "reports": [
+    {
+      "id": "b0ff2af9",
+      "taskId": "83d6740f",
+      "timestamp": 1772995749611,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[SEARCH] NSF REU programs AI machine learning undergraduate 2024 2025 active\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF AI Planning Institute for Data-Driven Discovery in Physics (https://www.cmu.edu/ai-physics-institute/outreach/nsf-reu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n[SEARCH] NSF REU AI machine learning undergraduate 2024 2025 program details\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), REU Program | Worcester Polytechnic Institute (https://www.wpi.edu/academics/departments/data-science/reu-program)\n[SUMMARY] **NSF REU Opportunities in AI/ML (Undergraduate - 2025/2026)** **1. University of Maryland CAAR (Combinatorics, Algorithms, AI for Real Problems)** * **Program:** 10-week NSF-funded REU program. * **I...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025; NSF REU programs AI machine learning undergraduate 2024 2025 active; NSF REU AI machine learning undergraduate 2024 2025 program details. Specifically, broaden the search to include institutions known for strong AI/ML research. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025; NSF REU programs AI machine learning undergraduate 2024 2025 active; NSF REU AI machine learning undergraduate 2024 2025 program details",
+      "format": "markdown",
+      "metadata": {
+        "progress": 4.143943773375617,
+        "action_count": 2,
+        "activity_type": "summary"
+      }
+    },
+    {
+      "id": "51528489",
+      "taskId": "83d6740f",
+      "timestamp": 1772995714016,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[SEARCH] NSF REU AI machine learning undergraduate 2024 2025\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), NCSA Awarded Funding to Continue AI-focused NSF REU Program (https://www.ncsa.illinois.edu/2025/02/20/ncsa-awarded-funding-to-continue-ai-focused-nsf-reu-program/)\n[SEARCH] NSF REU programs AI machine learning undergraduate 2024 2025 active\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF AI Planning Institute for Data-Driven Discovery in Physics (https://www.cmu.edu/ai-physics-institute/outreach/nsf-reu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n[SEARCH] NSF REU AI machine learning undergraduate 2024 2025 program details\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), REU Program | Worcester Polytechnic Institute (https://www.wpi.edu/academics/departments/data-science/reu-program)\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025; NSF REU programs AI machine learning undergraduate 2024 2025 active; NSF REU AI machine learning undergraduate 2024 2025 program details",
+      "format": "markdown",
+      "metadata": {
+        "progress": 2.1664778391520185,
+        "action_count": 1,
+        "activity_type": "search"
+      }
+    },
+    {
+      "id": "6578efc7",
+      "taskId": "83d6740f",
+      "timestamp": 1772995699360,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[SEARCH] NSF REU AI machine learning undergraduate 2024 2025\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), NCSA Awarded Funding to Continue AI-focused NSF REU Program (https://www.ncsa.illinois.edu/2025/02/20/ncsa-awarded-funding-to-continue-ai-focused-nsf-reu-program/)\n[SEARCH] NSF REU programs AI machine learning undergraduate 2024 2025 active\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF AI Planning Institute for Data-Driven Discovery in Physics (https://www.cmu.edu/ai-physics-institute/outreach/nsf-reu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n\n[ORCHESTRATOR FEEDBACK] Search for \"NSF REU data science machine learning undergraduate 2024 2025\" and \"NSF REU computational intelligence undergraduate 2024 2025\". Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025; NSF REU programs AI machine learning undergraduate 2024 2025 active",
+      "format": "markdown",
+      "metadata": {
+        "progress": 1.3522103097703722,
+        "action_count": 1,
+        "activity_type": "search"
+      }
+    },
+    {
+      "id": "17fed79c",
+      "taskId": "83d6740f",
+      "timestamp": 1772995680180,
+      "title": "Research Update - Authoritative REU Validation",
+      "content": "[SEARCH] NSF REU AI machine learning undergraduate 2024 2025\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), NCSA Awarded Funding to Continue AI-focused NSF REU Program (https://www.ncsa.illinois.edu/2025/02/20/ncsa-awarded-funding-to-continue-ai-focused-nsf-reu-program/)\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025",
+      "format": "markdown",
+      "metadata": {
+        "progress": 0.28660056326124406,
+        "action_count": 1,
+        "activity_type": "search"
+      }
+    }
+  ],
+  "export": {
+    "task": {
+      "id": "83d6740f",
+      "name": "Authoritative REU Validation",
+      "description": "Research current NSF REU opportunities in AI and machine learning for undergraduates, identify the strongest currently relevant official opportunities, verify deadlines and eligibility from authoritative sources, and produce a concise actionable shortlist with uncertainty clearly labeled where needed.",
+      "budgetMinutes": 30,
+      "status": "active",
+      "progress": 0.0,
+      "elapsed": 74,
+      "metrics": {
+        "searchCount": 3,
+        "thinkCount": 0,
+        "summaryCount": 1,
+        "checkpointCount": 0,
+        "webFetchCount": 0,
+        "llmTokensUsed": 0,
+        "errorCount": 0
+      },
+      "research_plan": {
+        "restated_task": "Identify and validate current NSF REU opportunities in AI and machine learning for undergraduates (2024-2025), producing a concise and actionable shortlist with clearly labeled uncertainty.",
+        "subtasks": [
+          {
+            "order": 1,
+            "description": "Discover and list all currently active NSF REU programs in AI and machine learning for undergraduates (2024-2025). Focus on identifying programs that explicitly involve undergraduate students and align with AI/ML research.",
+            "success_criteria": "A comprehensive list of all identified NSF REU programs, including program name, PI institution, and a brief description of the research focus. Verify that each program is currently active and targets undergraduates.",
+            "status": "in_progress",
+            "findings": []
+          },
+          {
+            "order": 2,
+            "description": "Analyze the provided arXiv abstracts (1 & 2) to determine if any associated REU opportunities exist or are explicitly mentioned. Investigate if the research aligns with typical REU program goals and student involvement.",
+            "success_criteria": "Confirmation (or denial) of any direct REU opportunities linked to the arXiv abstracts. If no direct REU is found, assess the potential for these projects to be incorporated into existing or new REU programs.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 3,
+            "description": "Verify NSF Funding Opportunity Announcements (FOA) related to AI/ML REU programs (1 & 2). Focus on identifying the specific FOAs and their deadlines.",
+            "success_criteria": "A list of all relevant NSF FOAs (including NSF 24-039 and NSF 24-508) with confirmed deadlines for each.",
+            "status": "pending",
+            "findings": []
+          },
+          {
+            "order": 4,
+            "description": "For each identified FOA, investigate the eligibility criteria for undergraduate students. Determine if the requirements (e.g., degree level, GPA) align with typical REU program requirements.",
+            "success_criteria": "A detailed assessment of the eligibility criteria for each FOA, noting any potential barriers for undergraduate students.",
+            "status": "pending",
+            "findings": []
+          }
+        ],
+        "current_subtask_index": 0,
+        "created_at": 1772995670814
+      },
+      "createdAt": 1772995653302,
+      "updatedAt": 1772995749631,
+      "config": {}
+    },
+    "activities": [
+      {
+        "id": "034b01ff",
+        "taskId": "83d6740f",
+        "time": "18:49:09",
+        "type": "summary",
+        "message": "\ud83d\udcdd Summarizing findings",
+        "metadata": {},
+        "timestamp": 1772995749609
+      },
+      {
+        "id": "cd5a536e",
+        "taskId": "83d6740f",
+        "time": "18:48:34",
+        "type": "search",
+        "message": "\ud83d\udd0d Searching for opportunities",
+        "metadata": {},
+        "timestamp": 1772995714014
+      },
+      {
+        "id": "aa2e9aa0",
+        "taskId": "83d6740f",
+        "time": "18:48:19",
+        "type": "search",
+        "message": "\ud83d\udd0d Searching for opportunities",
+        "metadata": {},
+        "timestamp": 1772995699355
+      },
+      {
+        "id": "6d03fbfd",
+        "taskId": "83d6740f",
+        "time": "18:48:00",
+        "type": "search",
+        "message": "\ud83d\udd0d Searching for opportunities",
+        "metadata": {},
+        "timestamp": 1772995680176
+      },
+      {
+        "id": "8c841954",
+        "taskId": "83d6740f",
+        "time": "18:47:33",
+        "type": "task_start",
+        "message": "\ud83e\udd85 Starting research: Authoritative REU Validation",
+        "metadata": {},
+        "timestamp": 1772995653940
+      }
+    ],
+    "searches": [
+      {
+        "id": "fefe7f5e",
+        "taskId": "83d6740f",
+        "time": "18:48:34",
+        "query": "nsf reu ai machine learning undergraduate 2024 2025 program details",
+        "results": 4,
+        "sources": [
+          "orchestrator_search"
+        ],
+        "timestamp": 1772995714015
+      },
+      {
+        "id": "d21caf70",
+        "taskId": "83d6740f",
+        "time": "18:48:19",
+        "query": "nsf reu programs ai machine learning undergraduate 2024 2025 active",
+        "results": 4,
+        "sources": [
+          "orchestrator_search"
+        ],
+        "timestamp": 1772995699359
+      },
+      {
+        "id": "f2d5d9f0",
+        "taskId": "83d6740f",
+        "time": "18:48:00",
+        "query": "nsf reu ai machine learning undergraduate 2024 2025",
+        "results": 4,
+        "sources": [
+          "orchestrator_search"
+        ],
+        "timestamp": 1772995680178
+      }
+    ],
+    "reports": [
+      {
+        "id": "b0ff2af9",
+        "taskId": "83d6740f",
+        "timestamp": 1772995749611,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[SEARCH] NSF REU programs AI machine learning undergraduate 2024 2025 active\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF AI Planning Institute for Data-Driven Discovery in Physics (https://www.cmu.edu/ai-physics-institute/outreach/nsf-reu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n[SEARCH] NSF REU AI machine learning undergraduate 2024 2025 program details\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), REU Program | Worcester Polytechnic Institute (https://www.wpi.edu/academics/departments/data-science/reu-program)\n[SUMMARY] **NSF REU Opportunities in AI/ML (Undergraduate - 2025/2026)** **1. University of Maryland CAAR (Combinatorics, Algorithms, AI for Real Problems)** * **Program:** 10-week NSF-funded REU program. * **I...\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025; NSF REU programs AI machine learning undergraduate 2024 2025 active; NSF REU AI machine learning undergraduate 2024 2025 program details. Specifically, broaden the search to include institutions known for strong AI/ML research. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025; NSF REU programs AI machine learning undergraduate 2024 2025 active; NSF REU AI machine learning undergraduate 2024 2025 program details",
+        "format": "markdown",
+        "metadata": {
+          "progress": 4.143943773375617,
+          "action_count": 2,
+          "activity_type": "summary"
+        }
+      },
+      {
+        "id": "51528489",
+        "taskId": "83d6740f",
+        "timestamp": 1772995714016,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[SEARCH] NSF REU AI machine learning undergraduate 2024 2025\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), NCSA Awarded Funding to Continue AI-focused NSF REU Program (https://www.ncsa.illinois.edu/2025/02/20/ncsa-awarded-funding-to-continue-ai-focused-nsf-reu-program/)\n[SEARCH] NSF REU programs AI machine learning undergraduate 2024 2025 active\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF AI Planning Institute for Data-Driven Discovery in Physics (https://www.cmu.edu/ai-physics-institute/outreach/nsf-reu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n[SEARCH] NSF REU AI machine learning undergraduate 2024 2025 program details\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), REU Program | Worcester Polytechnic Institute (https://www.wpi.edu/academics/departments/data-science/reu-program)\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Create a checkpoint summary to lock in evidence before deciding to transition. Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025; NSF REU programs AI machine learning undergraduate 2024 2025 active; NSF REU AI machine learning undergraduate 2024 2025 program details",
+        "format": "markdown",
+        "metadata": {
+          "progress": 2.1664778391520185,
+          "action_count": 1,
+          "activity_type": "search"
+        }
+      },
+      {
+        "id": "6578efc7",
+        "taskId": "83d6740f",
+        "timestamp": 1772995699360,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[SEARCH] NSF REU AI machine learning undergraduate 2024 2025\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), NCSA Awarded Funding to Continue AI-focused NSF REU Program (https://www.ncsa.illinois.edu/2025/02/20/ncsa-awarded-funding-to-continue-ai-focused-nsf-reu-program/)\n[SEARCH] NSF REU programs AI machine learning undergraduate 2024 2025 active\n  Found: NSF-REU at UMBC (https://reu-scc.umbc.edu/), NSF AI Planning Institute for Data-Driven Discovery in Physics (https://www.cmu.edu/ai-physics-institute/outreach/nsf-reu/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu)\n\n[ORCHESTRATOR FEEDBACK] Search for \"NSF REU data science machine learning undergraduate 2024 2025\" and \"NSF REU computational intelligence undergraduate 2024 2025\". Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025; NSF REU programs AI machine learning undergraduate 2024 2025 active",
+        "format": "markdown",
+        "metadata": {
+          "progress": 1.3522103097703722,
+          "action_count": 1,
+          "activity_type": "search"
+        }
+      },
+      {
+        "id": "17fed79c",
+        "taskId": "83d6740f",
+        "timestamp": 1772995680180,
+        "title": "Research Update - Authoritative REU Validation",
+        "content": "[SEARCH] NSF REU AI machine learning undergraduate 2024 2025\n  Found: Research Experience for Undergraduates (REU) Combinatorics ... (https://www.cs.umd.edu/projects/reucaar/), NSF Research Experiences for Undergraduates | NSF - U.S ... (https://www.nsf.gov/funding/initiatives/reu), NCSA Awarded Funding to Continue AI-focused NSF REU Program (https://www.ncsa.illinois.edu/2025/02/20/ncsa-awarded-funding-to-continue-ai-focused-nsf-reu-program/)\n\n[ORCHESTRATOR FEEDBACK] Continue gathering evidence for the current subtask using diversified, success-criteria-aligned queries. Avoid repeating recent queries: NSF REU AI machine learning undergraduate 2024 2025",
+        "format": "markdown",
+        "metadata": {
+          "progress": 0.28660056326124406,
+          "action_count": 1,
+          "activity_type": "search"
+        }
+      }
+    ],
+    "exported_at": "2026-03-08T19:17:38.171259"
+  },
+  "quality_signals": {
+    "plan_subtask_count": 4,
+    "plan_has_low_signal_domains": false,
+    "report_has_verified_section": false,
+    "report_has_tentative_section": false,
+    "report_has_uncertainty_section": false,
+    "report_has_next_steps_section": false,
+    "authoritative_link_count": 3,
+    "report_count": 4,
+    "export_has_searches": true,
+    "export_has_reports": true
+  }
+}

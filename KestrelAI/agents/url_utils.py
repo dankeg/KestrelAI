@@ -166,7 +166,7 @@ class URLFlagManager:
         # Then handle bare URLs - use more strict pattern to avoid incomplete URLs
         # Require at least domain.tld pattern (e.g., example.com)
         # This pattern is more strict: requires at least one dot in the domain part
-        bare_url_pattern = r"(https?://[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?:/[^\s\)\]\.,;:!?<>\n]*)?)"
+        bare_url_pattern = r"(?<![\[\(])(https?://[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?:/[^\s\)\]\.,;:!?<>\n]*)?)"
 
         def replace_bare_url(match):
             url = match.group(1)
@@ -232,9 +232,25 @@ class URLFlagManager:
 
         text = re.sub(markdown_flag_pattern, replace_markdown_flag, text)
 
+        grouped_flag_pattern = r"\[(URL_\d+(?:\s*,\s*URL_\d+)*)\]"
+
+        def replace_grouped_flags(match):
+            raw_group = match.group(1)
+            resolved: list[str] = []
+            for token in re.split(r"\s*,\s*", raw_group):
+                flag = f"[{token.strip()}]"
+                url = mapping.get(flag)
+                if url is None:
+                    missing_flags.add(flag)
+                    continue
+                resolved.append(url)
+            return ", ".join(resolved)
+
+        text = re.sub(grouped_flag_pattern, replace_grouped_flags, text)
+
         # Replace bare flags (not in markdown links)
         # Use word boundaries to avoid matching flags that are already in markdown links
-        bare_flag_pattern = r"(?<!\]\()(\[URL_\d+\])(?!\))"
+        bare_flag_pattern = r"(?<!\]\()(\[URL_\d+\])"
 
         def replace_bare_flag(match):
             flag = match.group(1)
@@ -258,6 +274,96 @@ class URLFlagManager:
         text = re.sub(r"\s+([.,;:!?])", r"\1", text)  # Remove space before punctuation
 
         return text
+
+    def replace_known_urls_with_flags(
+        self, text: str, flag_to_url: dict[str, str] | None = None
+    ) -> str:
+        """
+        Replace only URLs that already exist in the provided mapping.
+
+        Unknown URLs are removed rather than preserved so generated output cannot
+        introduce links that were never present in the evidence packet.
+        """
+        mapping = flag_to_url if flag_to_url is not None else self.flag_to_url
+        if not text or not mapping:
+            return text
+
+        normalized_url_to_flag: dict[str, str] = {}
+        for flag, url in mapping.items():
+            cleaned = clean_url(url)
+            if cleaned:
+                normalized_url_to_flag[cleaned] = flag
+
+        if not normalized_url_to_flag:
+            return text
+
+        markdown_link_pattern = r"\[([^\]]+)\]\(([^\)]+)\)"
+
+        def replace_markdown_link(match):
+            link_text = match.group(1)
+            url_or_flag = match.group(2).strip()
+            if url_or_flag in mapping:
+                return match.group(0)
+            cleaned = clean_url(url_or_flag)
+            if cleaned and cleaned in normalized_url_to_flag:
+                return f"[{link_text}]({normalized_url_to_flag[cleaned]})"
+            return link_text
+
+        text = re.sub(markdown_link_pattern, replace_markdown_link, text)
+
+        bare_url_pattern = r"(https?://[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?:/[^\s\)\]\.,;:!?<>\n]*)?)"
+
+        def replace_bare_url(match):
+            raw_url = match.group(1).rstrip(".,;:!?)")
+            cleaned = clean_url(raw_url)
+            if cleaned and cleaned in normalized_url_to_flag:
+                return normalized_url_to_flag[cleaned]
+            return ""
+
+        text = re.sub(bare_url_pattern, replace_bare_url, text)
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"\(\s*\)", "", text)
+        text = re.sub(r"\s+([.,;:!?])", r"\1", text)
+        return text.strip()
+
+    def strip_unknown_urls(
+        self, text: str, known_urls: list[str] | set[str] | tuple[str, ...]
+    ) -> str:
+        """Remove URLs that are not present in the known evidence set."""
+        if not text:
+            return text
+
+        normalized_allowed = {
+            cleaned
+            for cleaned in (clean_url(url) for url in known_urls or [])
+            if cleaned
+        }
+        if not normalized_allowed:
+            return text
+
+        markdown_link_pattern = r"\[([^\]]+)\]\(([^\)]+)\)"
+
+        def keep_or_drop_markdown(match):
+            link_text = match.group(1)
+            url = clean_url(match.group(2).strip())
+            if url and url in normalized_allowed:
+                return f"[{link_text}]({url})"
+            return link_text
+
+        bare_url_pattern = r"(https?://[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?:/[^\s\)\]\.,;:!?<>\n]*)?)"
+
+        def keep_or_drop_bare(match):
+            url = clean_url(match.group(1).rstrip(".,;:!?)"))
+            if url and url in normalized_allowed:
+                return url
+            return ""
+
+        text = re.sub(markdown_link_pattern, keep_or_drop_markdown, text)
+        text = re.sub(bare_url_pattern, keep_or_drop_bare, text)
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"\s+([.,;:!?])", r"\1", text)
+        text = re.sub(r"\(\s*\)", "", text)
+        return text.strip()
 
     def get_url_reference_table(self) -> str:
         """Generate a reference table of flags to URLs for LLM context."""

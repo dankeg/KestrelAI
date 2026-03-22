@@ -12,14 +12,33 @@ import os
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+from KestrelAI.backend.settings import (
+    AppSettings,
+    AppSettingsPayload,
+    AppSettingsResponse,
+    LlmProvider,
+    OllamaMode,
+    Orchestrator,
+    Theme,
+    build_agent_settings_payload,
+    build_stored_settings,
+    redact_settings,
+    resolve_role_model_name,
+    settings_response,
+)
+from KestrelAI.shared.llm_capabilities import (
+    RequestCapabilityProfile,
+    infer_request_capability_profile,
+    normalize_runtime_provider,
+)
 from KestrelAI.shared.models import ResearchPlan, Task, TaskMetrics, TaskStatus
 from KestrelAI.shared.redis_utils import (
     RedisConfig,
@@ -30,9 +49,19 @@ from KestrelAI.shared.redis_utils import (
     init_async_redis,
 )
 from KestrelAI.shared.runtime_settings import (
-    get_default_model_name,
-    normalize_max_context_tokens,
+    default_local_api_key,
+    get_default_openai_base_url,
+    normalize_openai_base_url,
     resolve_llm_base_url,
+)
+from KestrelAI.shared.wire_models import (
+    ActivityEntry,
+    Report,
+    SearchEntry,
+    StreamEventType,
+    SystemMetrics,
+    TaskStreamEvent,
+    TaskUpdate,
 )
 
 # Configure logging
@@ -85,27 +114,6 @@ class CommandType(str, Enum):
         return None
 
 
-class ActivityType(str, Enum):
-    TASK_START = "task_start"
-    SEARCH = "search"
-    ANALYSIS = "analysis"
-    SUMMARY = "summary"
-    CHECKPOINT = "checkpoint"
-    ERROR = "error"
-    THINKING = "thinking"
-    WEB_FETCH = "web_fetch"
-
-    @classmethod
-    def _missing_(cls, value: object):
-        if isinstance(value, str):
-            # Normalize to lowercase before lookup
-            value = value.lower()
-            for member in cls:
-                if member.value == value:
-                    return member
-        return None
-
-
 class ExportFormat(str, Enum):
     JSON = "json"
     PDF = "pdf"
@@ -137,116 +145,21 @@ class TaskCommand(BaseModel):
     )
 
 
-class TaskUpdate(BaseModel):
-    """Update received from the agent via Redis"""
-
-    taskId: str
-    status: TaskStatus | None = None
-    progress: float | None = None
-    elapsed: int | None = None
-    metrics: dict[str, int] | None = None
-    error: str | None = None
-    timestamp: int = Field(
-        default_factory=lambda: int(datetime.now().timestamp() * 1000)
-    )
-
-
-class ActivityEntry(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    taskId: str
-    time: str
-    type: ActivityType
-    message: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    timestamp: int = Field(
-        default_factory=lambda: int(datetime.now().timestamp() * 1000)
-    )
-
-
-class SearchEntry(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    taskId: str
-    time: str
-    query: str
-    results: int
-    sources: list[str] = Field(default_factory=list)
-    timestamp: int = Field(
-        default_factory=lambda: int(datetime.now().timestamp() * 1000)
-    )
-
-
-class Report(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
-    taskId: str
-    timestamp: int = Field(
-        default_factory=lambda: int(datetime.now().timestamp() * 1000)
-    )
-    title: str
-    content: str
-    format: str = "markdown"
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class SystemMetrics(BaseModel):
-    llmCalls: int
-    searches: int
-    pagesAnalyzed: int
-    summaries: int
-    checkpoints: int
-    tokensUsed: int
-    estimatedCost: float
-
-
-class OllamaMode(str, Enum):
-    local = "local"
-    docker = "docker"
-
-
-class Orchestrator(str, Enum):
-    hummingbird = "hummingbird"
-    kestrel = "kestrel"
-    albatross = "albatross"
-
-
-class Theme(str, Enum):
-    amber = "amber"
-    blue = "blue"
-
-
-class AppSettings(BaseModel):
-    ollamaMode: OllamaMode = Field(
-        default=OllamaMode.local, description="Where to send Ollama calls"
-    )
-    orchestrator: Orchestrator = Field(
-        default=Orchestrator.kestrel, description="Research orchestrator profile"
-    )
-    theme: Theme = Field(default=Theme.amber, description="UI theme color scheme")
-    modelName: str = Field(
-        default_factory=get_default_model_name,
-        min_length=1,
-        description="Selected model identifier for the active LLM provider",
-    )
-    maxContextTokens: int = Field(
-        default_factory=lambda: normalize_max_context_tokens(
-            os.getenv("MAX_CONTEXT_TOKENS", "32768")
-        ),
-        ge=2048,
-        le=262144,
-        description="Maximum context window used by agent/orchestrator token budgeting",
-    )
-
-    @field_validator("modelName")
-    @classmethod
-    def validate_model_name(cls, value: str) -> str:
-        return value.strip()
-
-
 class AvailableModelsResponse(BaseModel):
-    mode: OllamaMode
-    host: str
+    provider: LlmProvider
+    mode: OllamaMode | None = None
+    baseUrl: str
     models: list[str] = Field(default_factory=list)
     selected: str | None = None
     error: str | None = None
+
+
+class LlmRuntimeProfileResponse(BaseModel):
+    provider: LlmProvider
+    runtimeProvider: str
+    modelName: str
+    baseUrl: str
+    requestProfile: RequestCapabilityProfile
 
 
 class CreateTaskRequest(BaseModel):
@@ -310,6 +223,27 @@ def _resolve_ollama_host(mode: OllamaMode) -> str:
     )
 
 
+def _resolve_openai_base_url(configured_base_url: str | None) -> str:
+    explicit_base_url = (configured_base_url or "").strip()
+    if explicit_base_url:
+        return normalize_openai_base_url(explicit_base_url)
+    return get_default_openai_base_url()
+
+
+def _resolve_openai_api_key(
+    configured_api_key: str | None, base_url: str
+) -> str | None:
+    explicit_api_key = (configured_api_key or "").strip()
+    if explicit_api_key:
+        return explicit_api_key
+    return default_local_api_key(base_url)
+
+
+def _models_endpoint_for_base_url(base_url: str) -> str:
+    normalized = normalize_openai_base_url(base_url)
+    return f"{normalized.rstrip('/')}/models"
+
+
 # Task Queue Operations - now using unified Redis utilities
 async def send_command(
     task_id: str, command_type: CommandType, payload: dict[str, Any] = None
@@ -336,7 +270,7 @@ async def save_task_to_redis(task: Task):
     """Save task state to Redis"""
     try:
         client = get_async_redis_client(REDIS_CONFIG)
-        return await client.save_task_to_redis(task.dict())
+        return await client.save_task_to_redis(task.model_dump(mode="json"))
     except Exception as e:
         logger.error(f"Failed to save task to Redis: {e}")
         return False
@@ -355,7 +289,9 @@ async def process_queues():
                 if not raw:
                     break
                 try:
-                    update_data = json.loads(raw)
+                    update_data = TaskUpdate(**json.loads(raw)).model_dump(
+                        exclude_none=True
+                    )
                     task = await get_task_from_redis(update_data.get("taskId"))
                     if task:
                         # Update task fields
@@ -394,9 +330,10 @@ async def process_queues():
                             # Publish as separate metrics event
                             await r.publish(
                                 f"kestrel:task:{update_data['taskId']}:updates",
-                                json.dumps(
-                                    {"type": "metrics", "payload": system_metrics}
-                                ),
+                                TaskStreamEvent(
+                                    type=StreamEventType.METRICS,
+                                    payload=system_metrics,
+                                ).model_dump_json(),
                             )
 
                             # Also store in TASK_METRICS key for /metrics endpoint
@@ -430,7 +367,10 @@ async def process_queues():
                         # Publish update event (status changes, progress, etc.)
                         await r.publish(
                             f"kestrel:task:{update_data['taskId']}:updates",
-                            json.dumps({"type": "status", "payload": update_data}),
+                            TaskStreamEvent(
+                                type=StreamEventType.STATUS,
+                                payload=update_data,
+                            ).model_dump_json(),
                         )
 
                         # Also publish research plan update if it was updated
@@ -453,12 +393,10 @@ async def process_queues():
 
                                 await r.publish(
                                     f"kestrel:task:{update_data['taskId']}:updates",
-                                    json.dumps(
-                                        {
-                                            "type": "research_plan",
-                                            "payload": plan_payload,
-                                        }
-                                    ),
+                                    TaskStreamEvent(
+                                        type=StreamEventType.RESEARCH_PLAN,
+                                        payload=plan_payload,
+                                    ).model_dump_json(),
                                 )
                                 logger.info(
                                     f"Published research plan update for task {update_data['taskId']}"
@@ -478,7 +416,7 @@ async def process_queues():
             raw = await r.rpop(RedisQueues.TASK_ACTIVITIES)
             if raw:
                 try:
-                    activity_data = json.loads(raw)
+                    activity_data = ActivityEntry(**json.loads(raw)).model_dump()
                     task_id = activity_data.get("taskId")
                     if task_id:
                         # Ensure activity has an ID (frontend expects it)
@@ -492,7 +430,10 @@ async def process_queues():
                         # Publish activity event
                         await r.publish(
                             f"kestrel:task:{task_id}:updates",
-                            json.dumps({"type": "activity", "payload": activity_data}),
+                            TaskStreamEvent(
+                                type=StreamEventType.ACTIVITY,
+                                payload=activity_data,
+                            ).model_dump_json(),
                         )
                         logger.info(f"Processed activity for task {task_id}")
                 except Exception as e:
@@ -502,7 +443,7 @@ async def process_queues():
             raw = await r.rpop(RedisQueues.TASK_SEARCHES)
             if raw:
                 try:
-                    search_data = json.loads(raw)
+                    search_data = SearchEntry(**json.loads(raw)).model_dump()
                     task_id = search_data.get("taskId")
                     if task_id:
                         # Ensure search has an ID (frontend expects it)
@@ -516,7 +457,10 @@ async def process_queues():
                         # Publish search event
                         await r.publish(
                             f"kestrel:task:{task_id}:updates",
-                            json.dumps({"type": "search", "payload": search_data}),
+                            TaskStreamEvent(
+                                type=StreamEventType.SEARCH,
+                                payload=search_data,
+                            ).model_dump_json(),
                         )
                         logger.info(
                             f"Processed search for task {task_id}: {search_data.get('query', 'unknown')}"
@@ -528,7 +472,7 @@ async def process_queues():
             raw = await r.rpop(RedisQueues.TASK_REPORTS)
             if raw:
                 try:
-                    report_data = json.loads(raw)
+                    report_data = Report(**json.loads(raw)).model_dump()
                     task_id = report_data.get("taskId")
                     if task_id:
                         # Ensure report has an ID (frontend expects it)
@@ -542,7 +486,10 @@ async def process_queues():
                         # Publish report event
                         await r.publish(
                             f"kestrel:task:{task_id}:updates",
-                            json.dumps({"type": "report", "payload": report_data}),
+                            TaskStreamEvent(
+                                type=StreamEventType.REPORT,
+                                payload=report_data,
+                            ).model_dump_json(),
                         )
                         logger.info(f"Processed report for task {task_id}")
                 except Exception as e:
@@ -552,7 +499,7 @@ async def process_queues():
             raw = await r.rpop(RedisQueues.TASK_METRICS)
             if raw:
                 try:
-                    metrics = json.loads(raw)
+                    metrics = SystemMetrics(**json.loads(raw)).model_dump()
                     task_id = metrics.get("taskId")
                     if task_id:
                         key = RedisKeys.TASK_METRICS.format(task_id=task_id)
@@ -560,7 +507,10 @@ async def process_queues():
                         # Publish metrics event
                         await r.publish(
                             f"kestrel:task:{task_id}:updates",
-                            json.dumps({"type": "metrics", "payload": metrics}),
+                            TaskStreamEvent(
+                                type=StreamEventType.METRICS,
+                                payload=metrics,
+                            ).model_dump_json(),
                         )
                         logger.info(f"Processed metrics for task {task_id}")
                 except Exception as e:
@@ -581,6 +531,18 @@ searches_memory: dict[str, list[SearchEntry]] = {}
 reports_memory: dict[str, list[Report]] = {}
 settings_memory: AppSettings = AppSettings()
 
+
+async def _get_stored_settings() -> AppSettings:
+    try:
+        r = await get_redis()
+        settings_data = await r.get("kestrel:settings")
+        if settings_data:
+            return AppSettings(**json.loads(settings_data))
+    except Exception:
+        pass
+    return settings_memory
+
+
 # API Endpoints
 
 
@@ -600,84 +562,167 @@ async def root():
     }
 
 
-@app.get("/settings", response_model=AppSettings)
-@app.get("/api/v1/settings", response_model=AppSettings)
+@app.get("/settings", response_model=AppSettingsResponse)
+@app.get("/api/v1/settings", response_model=AppSettingsResponse)
 async def get_settings():
     """Get current application settings"""
-    try:
-        r = await get_redis()
-        settings_data = await r.get("kestrel:settings")
-        if settings_data:
-            return AppSettings(**json.loads(settings_data))
-    except:
-        pass
-
-    # Fallback to in-memory storage
-    return settings_memory
+    return settings_response(await _get_stored_settings())
 
 
-@app.post("/settings", response_model=AppSettings)
-@app.post("/api/v1/settings", response_model=AppSettings)
-async def save_settings(settings: AppSettings):
+@app.post("/settings", response_model=AppSettingsResponse)
+@app.post("/api/v1/settings", response_model=AppSettingsResponse)
+async def save_settings(settings: AppSettingsPayload):
     """Save application settings"""
     global settings_memory
+    existing_settings = await _get_stored_settings()
+    stored_settings = build_stored_settings(settings, existing_settings)
 
     try:
         r = await get_redis()
-        await r.set("kestrel:settings", settings.json())
+        await r.set("kestrel:settings", stored_settings.model_dump_json())
 
         # Also store in memory as fallback
-        settings_memory = settings
+        settings_memory = stored_settings
 
         # Send settings update to all active agents
-        await send_command(None, CommandType.UPDATE_SETTINGS, settings.dict())
+        await send_command(
+            None,
+            CommandType.UPDATE_SETTINGS,
+            build_agent_settings_payload(stored_settings),
+        )
 
-        logger.info(f"Settings updated: {settings.dict()}")
-        return settings
+        logger.info("Settings updated: %s", redact_settings(stored_settings))
+        return settings_response(stored_settings)
     except Exception as e:
         logger.error(f"Failed to save settings: {e}")
         # Fallback to in-memory storage
-        settings_memory = settings
-        return settings
+        settings_memory = stored_settings
+        return settings_response(stored_settings)
 
 
 @app.get("/settings/models", response_model=AvailableModelsResponse)
 @app.get("/api/v1/settings/models", response_model=AvailableModelsResponse)
-async def get_available_models(mode: OllamaMode | None = Query(default=None)):
-    """Discover available models directly from Ollama (/api/tags)."""
-    current_settings = await get_settings()
-    selected_mode = mode or current_settings.ollamaMode
-    host = _resolve_ollama_host(selected_mode)
-    tags_url = f"{host.rstrip('/')}/api/tags"
+async def get_available_models(
+    provider: LlmProvider | None = Query(default=None),
+    mode: OllamaMode | None = Query(default=None),
+    base_url: str | None = Query(default=None),
+    x_kestrel_api_key: str | None = Header(default=None),
+):
+    """Discover available models from the currently selected provider."""
+    current_settings = await _get_stored_settings()
+    selected_provider = provider or current_settings.llmProvider
+
+    if selected_provider == LlmProvider.ollama:
+        selected_mode = mode or current_settings.ollamaMode
+        host = _resolve_ollama_host(selected_mode)
+        tags_url = f"{host.rstrip('/')}/api/tags"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(tags_url)
+                response.raise_for_status()
+                payload = response.json()
+
+            models = sorted(
+                {
+                    str(item.get("name", "")).strip()
+                    for item in payload.get("models", [])
+                    if str(item.get("name", "")).strip()
+                }
+            )
+            selected = resolve_role_model_name(
+                current_settings, "executionModelName"
+            ) or (models[0] if models else None)
+            return AvailableModelsResponse(
+                provider=selected_provider,
+                mode=selected_mode,
+                baseUrl=host,
+                models=models,
+                selected=selected,
+            )
+        except Exception as e:
+            logger.warning("Failed to fetch Ollama model list from %s: %s", tags_url, e)
+            return AvailableModelsResponse(
+                provider=selected_provider,
+                mode=selected_mode,
+                baseUrl=host,
+                selected=resolve_role_model_name(current_settings, "executionModelName")
+                or None,
+                error=str(e),
+            )
+
+    resolved_base_url = _resolve_openai_base_url(
+        base_url or current_settings.openaiBaseUrl
+    )
+    models_url = _models_endpoint_for_base_url(resolved_base_url)
+    api_key = _resolve_openai_api_key(
+        x_kestrel_api_key or current_settings.openaiApiKey,
+        resolved_base_url,
+    )
+    headers: dict[str, str] = {}
+    if api_key and api_key != "not-required":
+        headers["Authorization"] = f"Bearer {api_key}"
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(tags_url)
+            response = await client.get(models_url, headers=headers)
             response.raise_for_status()
             payload = response.json()
 
         models = sorted(
             {
-                str(item.get("name", "")).strip()
-                for item in payload.get("models", [])
-                if str(item.get("name", "")).strip()
+                str(item.get("id", "")).strip()
+                for item in payload.get("data", [])
+                if isinstance(item, dict) and str(item.get("id", "")).strip()
             }
         )
-        selected = current_settings.modelName or (models[0] if models else None)
+        selected = resolve_role_model_name(current_settings, "executionModelName") or (
+            models[0] if models else None
+        )
         return AvailableModelsResponse(
-            mode=selected_mode,
-            host=host,
+            provider=selected_provider,
+            baseUrl=resolved_base_url,
             models=models,
             selected=selected,
         )
     except Exception as e:
-        logger.warning("Failed to fetch Ollama model list from %s: %s", tags_url, e)
+        logger.warning(
+            "Failed to fetch OpenAI-compatible model list from %s: %s",
+            models_url,
+            e,
+        )
         return AvailableModelsResponse(
-            mode=selected_mode,
-            host=host,
-            selected=current_settings.modelName or None,
+            provider=selected_provider,
+            baseUrl=resolved_base_url,
+            selected=resolve_role_model_name(current_settings, "executionModelName")
+            or None,
             error=str(e),
         )
+
+
+@app.get("/settings/capabilities", response_model=LlmRuntimeProfileResponse)
+@app.get("/api/v1/settings/capabilities", response_model=LlmRuntimeProfileResponse)
+async def get_runtime_capabilities():
+    current_settings = await _get_stored_settings()
+    runtime_provider = normalize_runtime_provider(current_settings.llmProvider)
+    control_model_name = resolve_role_model_name(current_settings, "controlModelName")
+    base_url = (
+        _resolve_openai_base_url(current_settings.openaiBaseUrl)
+        if runtime_provider == "openai_compatible"
+        else _resolve_ollama_host(current_settings.ollamaMode)
+    )
+    request_profile = infer_request_capability_profile(
+        model=control_model_name,
+        provider=runtime_provider,
+        host=base_url,
+    )
+    return LlmRuntimeProfileResponse(
+        provider=current_settings.llmProvider,
+        runtimeProvider=runtime_provider,
+        modelName=control_model_name,
+        baseUrl=base_url,
+        requestProfile=request_profile,
+    )
 
 
 @app.get("/api/v1/tasks", response_model=list[Task])
@@ -762,17 +807,21 @@ async def update_task(task_id: str, updates: dict[str, Any]):
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
 
-    # Update task fields
+    merged_task = task.model_dump()
     for field, value in updates.items():
-        if hasattr(task, field) and field not in ["id", "createdAt"]:
-            if field == "metrics" and isinstance(value, dict):
-                task.metrics = TaskMetrics(**value)
-                logger.error(task.metrics)
-                logger.error(f"Pre-existing Values: {task.metrics}")
-            else:
-                setattr(task, field, value)
+        if field in ["id", "createdAt"] or field not in merged_task:
+            continue
+        if field == "metrics" and isinstance(value, dict):
+            merged_task[field] = TaskMetrics(**value).model_dump()
+        else:
+            merged_task[field] = value
 
-    task.updatedAt = int(datetime.now().timestamp() * 1000)
+    merged_task["updatedAt"] = int(datetime.now().timestamp() * 1000)
+
+    try:
+        task = Task(**merged_task)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     try:
         await save_task_to_redis(task)
@@ -1149,7 +1198,12 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                 # Fallback: send periodic updates
                 task = tasks_memory.get(task_id)
                 if task:
-                    await websocket.send_json({"type": "status", "data": task.dict()})
+                    await websocket.send_text(
+                        TaskStreamEvent(
+                            type=StreamEventType.STATUS,
+                            payload=task.model_dump(),
+                        ).model_dump_json()
+                    )
 
             await asyncio.sleep(5)
 

@@ -25,7 +25,9 @@ class AgentState:
     history: deque = field(default_factory=lambda: deque(maxlen=20))
     action_count: int = 0
     think_count: int = 0
+    search_attempt_count: int = 0
     search_count: int = 0
+    zero_result_search_count: int = 0
     summary_count: int = 0
     checkpoint_count: int = 0
     last_checkpoint: str = ""
@@ -41,6 +43,11 @@ class AgentState:
     consecutive_searches: int = 0
     last_action: str = ""
     action_pattern: list[str] = field(default_factory=lambda: deque(maxlen=10))
+    planner_fallback_count: int = 0
+    consecutive_planner_failures: int = 0
+    search_pathways: list[dict[str, Any]] = field(default_factory=list)
+    pathway_query_map: dict[str, str] = field(default_factory=dict)
+    pathway_context_key: str = ""
 
     def is_in_loop(self, max_repeats: int = 3) -> bool:
         """Check if agent is stuck in a repetitive loop"""
@@ -73,6 +80,27 @@ class AgentState:
         else:
             self.consecutive_thinks = 0
             self.consecutive_searches = 0
+
+    def register_pathway_query(self, canonical_query: str, pathway_id: str) -> None:
+        """Associate a canonical query with a pathway for later outcome tracking."""
+        if canonical_query and pathway_id:
+            self.pathway_query_map[canonical_query] = pathway_id
+
+    def pathway_for_query(self, canonical_query: str) -> str:
+        """Look up the pathway associated with a canonical query."""
+        return str(self.pathway_query_map.get(canonical_query, "") or "")
+
+    def record_pathway_attempt(self, pathway_id: str, *, hit: bool = False) -> None:
+        """Update attempt/hit counters for a tracked pathway."""
+        if not pathway_id:
+            return
+        for pathway in self.search_pathways:
+            if str(pathway.get("id", "")) != pathway_id:
+                continue
+            pathway["attempt_count"] = int(pathway.get("attempt_count", 0) or 0) + 1
+            if hit:
+                pathway["hit_count"] = int(pathway.get("hit_count", 0) or 0) + 1
+            break
 
 
 class BaseAgent(ABC):
@@ -159,11 +187,16 @@ class ResearchAgent(BaseAgent):
                 "searches": [],
                 "search_history": [],
                 "action_count": 0,
+                "search_attempt_count": 0,
                 "search_count": 0,
+                "zero_result_search_count": 0,
                 "think_count": 0,
                 "summary_count": 0,
                 "checkpoint_count": 0,
                 "current_focus": "",
+                "planner_fallback_count": 0,
+                "consecutive_planner_failures": 0,
+                "search_pathways": [],
             }
 
         state = self._state[task_name]
@@ -171,11 +204,16 @@ class ResearchAgent(BaseAgent):
             "searches": list(state.queries),
             "search_history": state.search_history,
             "action_count": state.action_count,
+            "search_attempt_count": state.search_attempt_count,
             "search_count": state.search_count,
+            "zero_result_search_count": state.zero_result_search_count,
             "think_count": state.think_count,
             "summary_count": state.summary_count,
             "checkpoint_count": state.checkpoint_count,
             "current_focus": state.current_focus,
+            "planner_fallback_count": state.planner_fallback_count,
+            "consecutive_planner_failures": state.consecutive_planner_failures,
+            "search_pathways": state.search_pathways,
         }
 
     def get_metrics(self) -> dict[str, Any]:
@@ -196,10 +234,17 @@ class ResearchAgent(BaseAgent):
         for state in self._state.values():
             state.action_count = 0
             state.think_count = 0
+            state.search_attempt_count = 0
             state.search_count = 0
+            state.zero_result_search_count = 0
             state.summary_count = 0
             state.checkpoint_count = 0
             state.search_history.clear()
+            state.planner_fallback_count = 0
+            state.consecutive_planner_failures = 0
+            state.search_pathways.clear()
+            state.pathway_query_map.clear()
+            state.pathway_context_key = ""
 
 
 class OrchestratorAgent(BaseAgent):

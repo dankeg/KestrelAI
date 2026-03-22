@@ -11,6 +11,8 @@ import time
 from datetime import datetime
 from typing import Any
 
+from KestrelAI.shared.wire_models import ActivityEntry, Report, SearchEntry, TaskUpdate
+
 try:
     import redis
     import redis.asyncio as async_redis
@@ -108,7 +110,7 @@ class SyncRedisClient:
 
     def send_update(self, task_id: str, **kwargs):
         """Send status update to backend"""
-        update = {"taskId": task_id, "timestamp": int(time.time() * 1000), **kwargs}
+        update = TaskUpdate(taskId=task_id, **kwargs).model_dump(exclude_none=True)
         self.redis.lpush(RedisQueues.TASK_UPDATES, _json_dumps(update))
         self._update_task_state(task_id, update)
 
@@ -141,26 +143,26 @@ class SyncRedisClient:
     def send_activity(self, task_id: str, activity_type: str, message: str):
         """Send activity log to backend"""
         now = datetime.now()
-        activity = {
-            "taskId": task_id,
-            "type": activity_type,
-            "message": message,
-            "timestamp": int(time.time() * 1000),
-            "time": now.strftime("%H:%M:%S"),
-        }
+        activity = ActivityEntry(
+            taskId=task_id,
+            type=activity_type,
+            message=message,
+            timestamp=int(time.time() * 1000),
+            time=now.strftime("%H:%M:%S"),
+        ).model_dump()
         self.redis.lpush(RedisQueues.TASK_ACTIVITIES, _json_dumps(activity))
 
     def send_search(self, task_id: str, query: str, results: int, sources: list[str]):
         """Send search information to backend"""
         now = datetime.now()
-        payload = {
-            "taskId": task_id,
-            "query": query,
-            "results": results,
-            "sources": sources,
-            "timestamp": int(time.time() * 1000),
-            "time": now.strftime("%H:%M:%S"),
-        }
+        payload = SearchEntry(
+            taskId=task_id,
+            query=query,
+            results=results,
+            sources=sources,
+            timestamp=int(time.time() * 1000),
+            time=now.strftime("%H:%M:%S"),
+        ).model_dump()
         self.redis.lpush(RedisQueues.TASK_SEARCHES, _json_dumps(payload))
 
     def send_report(
@@ -171,14 +173,14 @@ class SyncRedisClient:
         metadata: dict[str, Any] | None = None,
     ):
         """Send report to backend"""
-        report = {
-            "taskId": task_id,
-            "title": title,
-            "content": content,
-            "metadata": metadata or {},
-            "timestamp": int(time.time() * 1000),
-            "format": "markdown",
-        }
+        report = Report(
+            taskId=task_id,
+            title=title,
+            content=content,
+            metadata=metadata or {},
+            timestamp=int(time.time() * 1000),
+            format="markdown",
+        ).model_dump()
         self.redis.lpush(RedisQueues.TASK_REPORTS, _json_dumps(report))
 
     def checkpoint(self, task_id: str, state: dict[str, Any]):

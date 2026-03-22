@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import pathlib
+import re
 import threading
 import time
 from datetime import datetime
@@ -16,6 +17,7 @@ from KestrelAI.agents.base import LlmWrapper
 from KestrelAI.agents.research_orchestrator import ResearchOrchestrator
 from KestrelAI.agents.web_research_agent import ResearchConfig, WebResearchAgent
 from KestrelAI.memory.vector_store import MemoryStore
+from KestrelAI.shared.llm_capabilities import normalize_runtime_provider
 from KestrelAI.shared.models import (
     ResearchPlan,
     Task,
@@ -27,8 +29,12 @@ from KestrelAI.shared.models import (
 )
 from KestrelAI.shared.redis_utils import RedisConfig, get_sync_redis_client
 from KestrelAI.shared.runtime_settings import (
+    default_local_api_key,
+    get_default_llm_provider,
     get_default_model_name,
+    get_default_openai_base_url,
     normalize_max_context_tokens,
+    normalize_openai_base_url,
     resolve_llm_base_url,
 )
 
@@ -62,32 +68,16 @@ class KestrelAgentWorker:
     def __init__(self):
         # Initialize Redis client
         self.redis_client = get_sync_redis_client(REDIS_CONFIG)
+        self._active_model_pulls: set[tuple[str, str]] = set()
+        self._model_pull_lock = threading.Lock()
 
         # Initialize AI components
         self.mem = MemoryStore()
 
         # Load settings from Redis if available, otherwise use defaults
         loaded_settings = self._load_settings_from_redis()
-        ollama_mode = loaded_settings["ollamaMode"]
-        ollama_host = self._get_ollama_host_for_mode(ollama_mode)
-        model_name = self._resolve_model_name(
-            loaded_settings.get("modelName"), ollama_host
-        )
-        max_context_tokens = self._normalize_max_context_tokens(
-            loaded_settings.get("maxContextTokens")
-        )
-
-        # Ensure model is available before initializing LLM for Ollama-like endpoints.
-        if self._should_ensure_ollama_model(ollama_host):
-            self._ensure_model_available(model_name, ollama_host)
-
-        self.llm = LlmWrapper(model=model_name, host=ollama_host)
-        self.agent = WebResearchAgent(
-            "main-agent",
-            self.llm,
-            self.mem,
-            config=ResearchConfig(max_context_tokens=max_context_tokens),
-        )
+        runtime_config = self._resolve_runtime_config(loaded_settings)
+        self._apply_runtime_config(runtime_config)
 
         # State management
         self.running = False
@@ -106,10 +96,15 @@ class KestrelAgentWorker:
 
         # Settings management - use loaded settings or defaults
         self.app_settings = {
-            "ollamaMode": ollama_mode,
+            "llmProvider": loaded_settings["llmProvider"],
+            "ollamaMode": loaded_settings["ollamaMode"],
             "orchestrator": loaded_settings["orchestrator"],
-            "modelName": model_name,
-            "maxContextTokens": max_context_tokens,
+            "modelName": runtime_config["model_name"],
+            "executionModelName": runtime_config["execution_model_name"],
+            "controlModelName": runtime_config["control_model_name"],
+            "openaiBaseUrl": loaded_settings["openaiBaseUrl"],
+            "openaiApiKey": loaded_settings["openaiApiKey"],
+            "maxContextTokens": runtime_config["max_context_tokens"],
         }
 
         self.latest_feedback = "No Feedback Yet!"
@@ -167,7 +162,7 @@ class KestrelAgentWorker:
         """Normalize max context token setting with sane bounds."""
         return normalize_max_context_tokens(raw_value)
 
-    def _resolve_model_name(self, raw_value: Any, ollama_host: str) -> str:
+    def _resolve_model_name(self, raw_value: Any, endpoint: str, provider: str) -> str:
         """Resolve selected model name from settings/env/available Ollama models."""
         if isinstance(raw_value, str) and raw_value.strip():
             return raw_value.strip()
@@ -176,11 +171,11 @@ class KestrelAgentWorker:
         if env_model:
             return env_model
 
-        if self._should_ensure_ollama_model(ollama_host):
+        if self._should_ensure_ollama_model(endpoint, provider):
             try:
                 import ollama
 
-                client = ollama.Client(host=ollama_host)
+                client = ollama.Client(host=endpoint)
                 payload = client.list()
                 for model_info in payload.get("models", []):
                     name = str(
@@ -196,12 +191,114 @@ class KestrelAgentWorker:
         # Keep this conservative to avoid accidentally selecting oversized local models.
         return get_default_model_name()
 
+    def _resolve_role_model_name(
+        self,
+        settings: dict[str, Any],
+        role_key: str,
+        fallback_model_name: str,
+        endpoint: str,
+        provider: str,
+    ) -> str:
+        role_value = settings.get(role_key)
+        if isinstance(role_value, str) and role_value.strip():
+            return self._resolve_model_name(role_value, endpoint, provider)
+        return fallback_model_name
+
+    @staticmethod
+    def _build_llm_wrapper(
+        model_name: str, endpoint: str, provider: str, api_key: str | None
+    ) -> LlmWrapper:
+        return LlmWrapper(
+            model=model_name,
+            host=endpoint,
+            provider=provider,
+            api_key=api_key,
+        )
+
+    def _resolve_runtime_config(self, settings: dict[str, Any]) -> dict[str, Any]:
+        provider = normalize_runtime_provider(settings.get("llmProvider", "ollama"))
+        endpoint = self._resolve_llm_endpoint(settings)
+        model_name = self._resolve_model_name(
+            settings.get("modelName"),
+            endpoint,
+            provider,
+        )
+        execution_model_name = self._resolve_role_model_name(
+            settings,
+            "executionModelName",
+            model_name,
+            endpoint,
+            provider,
+        )
+        control_model_name = self._resolve_role_model_name(
+            settings,
+            "controlModelName",
+            model_name,
+            endpoint,
+            provider,
+        )
+        return {
+            "provider": provider,
+            "endpoint": endpoint,
+            "model_name": model_name,
+            "execution_model_name": execution_model_name,
+            "control_model_name": control_model_name,
+            "max_context_tokens": self._normalize_max_context_tokens(
+                settings.get("maxContextTokens")
+            ),
+            "api_key": self._resolve_api_key(settings, endpoint, provider),
+        }
+
+    def _apply_runtime_config(
+        self, runtime_config: dict[str, Any], rebuild_agent: bool = True
+    ) -> None:
+        endpoint = runtime_config["endpoint"]
+        provider = runtime_config["provider"]
+        execution_model_name = runtime_config["execution_model_name"]
+        control_model_name = runtime_config["control_model_name"]
+
+        if self._should_ensure_ollama_model(endpoint, provider):
+            for role_model_name in {execution_model_name, control_model_name}:
+                self._ensure_model_available(role_model_name, endpoint)
+
+        self.execution_llm = self._build_llm_wrapper(
+            execution_model_name,
+            endpoint,
+            provider,
+            runtime_config["api_key"],
+        )
+        self.control_llm = self._build_llm_wrapper(
+            control_model_name,
+            endpoint,
+            provider,
+            runtime_config["api_key"],
+        )
+        self.llm = self.execution_llm
+
+        if rebuild_agent:
+            self._rebuild_execution_agent(runtime_config["max_context_tokens"])
+
+    def _rebuild_execution_agent(self, max_context_tokens: int) -> None:
+        self.agent = WebResearchAgent(
+            "main-agent",
+            self.execution_llm,
+            self.mem,
+            config=ResearchConfig(max_context_tokens=max_context_tokens),
+        )
+
     def _load_settings_from_redis(self) -> dict[str, Any]:
         """Load app settings from Redis if available."""
         defaults = {
+            "llmProvider": get_default_llm_provider(),
             "ollamaMode": "local",
             "orchestrator": "kestrel",
             "modelName": get_default_model_name(),
+            "executionModelName": get_default_model_name(),
+            "controlModelName": get_default_model_name(),
+            "openaiBaseUrl": get_default_openai_base_url(),
+            "openaiApiKey": (
+                os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or ""
+            ).strip(),
             "maxContextTokens": self._normalize_max_context_tokens(
                 os.getenv("MAX_CONTEXT_TOKENS", "32768")
             ),
@@ -220,21 +317,40 @@ class KestrelAgentWorker:
                 settings_data = self.redis_client.redis.get("kestrel:settings")
                 if settings_data:
                     settings = json.loads(settings_data)
+                    legacy_model_name = settings.get("modelName", defaults["modelName"])
                     merged = defaults | {
+                        "llmProvider": settings.get(
+                            "llmProvider", defaults["llmProvider"]
+                        ),
                         "ollamaMode": settings.get(
                             "ollamaMode", defaults["ollamaMode"]
                         ),
                         "orchestrator": settings.get(
                             "orchestrator", defaults["orchestrator"]
                         ),
-                        "modelName": settings.get("modelName", defaults["modelName"]),
+                        "modelName": legacy_model_name,
+                        "executionModelName": settings.get(
+                            "executionModelName", legacy_model_name
+                        ),
+                        "controlModelName": settings.get(
+                            "controlModelName", legacy_model_name
+                        ),
+                        "openaiBaseUrl": settings.get(
+                            "openaiBaseUrl", defaults["openaiBaseUrl"]
+                        ),
+                        "openaiApiKey": settings.get(
+                            "openaiApiKey", defaults["openaiApiKey"]
+                        ),
                         "maxContextTokens": self._normalize_max_context_tokens(
                             settings.get(
                                 "maxContextTokens", defaults["maxContextTokens"]
                             )
                         ),
                     }
-                    logger.info("Loaded app settings from Redis: %s", merged)
+                    logger.info(
+                        "Loaded app settings from Redis: %s",
+                        self._redact_settings(merged),
+                    )
                     return merged
             except Exception as e:
                 # Handle Redis connection errors (ConnectionError, TimeoutError, etc.)
@@ -278,20 +394,57 @@ class KestrelAgentWorker:
         return host
 
     @staticmethod
-    def _should_ensure_ollama_model(ollama_host: str) -> bool:
+    def _redact_settings(settings: dict[str, Any]) -> dict[str, Any]:
+        redacted = dict(settings)
+        if redacted.get("openaiApiKey"):
+            redacted["openaiApiKey"] = "***redacted***"
+        return redacted
+
+    def _resolve_llm_endpoint(self, settings: dict[str, Any]) -> str:
+        provider = str(settings.get("llmProvider") or "ollama").strip().lower()
+        if provider == "openai_compatible":
+            explicit_base_url = str(settings.get("openaiBaseUrl") or "").strip()
+            return normalize_openai_base_url(
+                explicit_base_url or get_default_openai_base_url()
+            )
+        return self._get_ollama_host_for_mode(
+            str(settings.get("ollamaMode") or "local")
+        )
+
+    @staticmethod
+    def _resolve_api_key(
+        settings: dict[str, Any], endpoint: str, provider: str
+    ) -> str | None:
+        if provider != "openai_compatible":
+            return None
+        explicit_api_key = str(settings.get("openaiApiKey") or "").strip()
+        if explicit_api_key:
+            return explicit_api_key
+        return default_local_api_key(endpoint)
+
+    @staticmethod
+    def _should_ensure_ollama_model(
+        ollama_host: str, provider: str | None = None
+    ) -> bool:
         """
         Return True only when endpoint looks like Ollama.
         Skip model pull checks for non-Ollama OpenAI-compatible providers.
         """
-        provider = os.getenv("LLM_PROVIDER", "openai_compatible").strip().lower()
-        if provider == "ollama_native":
+        resolved_provider = (provider or "").strip().lower()
+        if resolved_provider == "ollama":
+            return True
+        if resolved_provider == "openai_compatible":
+            return False
+
+        env_provider = os.getenv("LLM_PROVIDER", "openai_compatible").strip().lower()
+        if env_provider == "ollama_native":
             return True
 
         host = (ollama_host or "").lower()
         return "11434" in host or "ollama" in host
 
     def _ensure_model_available(self, model_name: str, ollama_host: str):
-        """Check if model is available, and pull it if not"""
+        """Check if model is available, and start a background pull if not."""
         try:
             import ollama
 
@@ -317,17 +470,10 @@ class KestrelAgentWorker:
                 if model_found:
                     logger.info(f"Model {model_name} is available")
                 else:
-                    logger.info(f"Model {model_name} not found, attempting to pull...")
-                    try:
-                        # Note: pull() can take a long time for large models
-                        # This is non-blocking for initialization but may delay first use
-                        client.pull(model_name)
-                        logger.info(f"Successfully pulled model {model_name}")
-                    except Exception as e:
-                        logger.warning(f"Could not pull model {model_name}: {e}")
-                        logger.warning(
-                            "Continuing - ensure model is available manually if needed"
-                        )
+                    logger.info(
+                        "Model %s not found, starting background pull", model_name
+                    )
+                    self._start_background_model_pull(model_name, ollama_host)
             except Exception as e:
                 # Ollama might not be ready yet - this is okay, will retry on first use
                 logger.debug(
@@ -338,6 +484,36 @@ class KestrelAgentWorker:
         except Exception as e:
             # Don't fail initialization if model check fails
             logger.debug(f"Error checking model availability: {e}")
+
+    def _start_background_model_pull(self, model_name: str, ollama_host: str) -> None:
+        pull_key = (ollama_host, model_name)
+        with self._model_pull_lock:
+            if pull_key in self._active_model_pulls:
+                logger.info("Background pull already active for model %s", model_name)
+                return
+            self._active_model_pulls.add(pull_key)
+
+        def _pull() -> None:
+            try:
+                import ollama
+
+                client = ollama.Client(host=ollama_host)
+                client.pull(model_name)
+                logger.info("Successfully pulled model %s", model_name)
+            except Exception as e:
+                logger.warning("Could not pull model %s: %s", model_name, e)
+                logger.warning(
+                    "Continuing - ensure model is available manually if needed"
+                )
+            finally:
+                with self._model_pull_lock:
+                    self._active_model_pulls.discard(pull_key)
+
+        threading.Thread(
+            target=_pull,
+            name=f"ollama-pull-{model_name}",
+            daemon=True,
+        ).start()
 
     def run(self):
         """Main agent loop"""
@@ -438,7 +614,7 @@ class KestrelAgentWorker:
         )
         task_orchestrator = ResearchOrchestrator(
             [task],
-            self.llm,
+            self.control_llm,
             profile=orchestrator_profile,
             max_context_tokens=max_context_tokens,
         )
@@ -533,7 +709,7 @@ class KestrelAgentWorker:
                         if fallback_plan.subtasks:
                             task_state.create_subtask_agent(
                                 0,
-                                self.llm,
+                                self.execution_llm,
                                 self.mem,
                                 task_orchestrator.mcp_manager
                                 if getattr(task_orchestrator, "use_mcp", False)
@@ -734,39 +910,39 @@ class KestrelAgentWorker:
                 next_settings.get("maxContextTokens")
             )
         self.app_settings.update(next_settings)
+        runtime_config = self._resolve_runtime_config(self.app_settings)
+        self.app_settings["modelName"] = runtime_config["model_name"]
+        self.app_settings["executionModelName"] = runtime_config["execution_model_name"]
+        self.app_settings["controlModelName"] = runtime_config["control_model_name"]
+        self.app_settings["maxContextTokens"] = runtime_config["max_context_tokens"]
 
-        ollama_mode = self.app_settings.get("ollamaMode", "local")
-        ollama_host = self._get_ollama_host_for_mode(ollama_mode)
-        model_name = self._resolve_model_name(
-            self.app_settings.get("modelName"),
-            ollama_host,
-        )
-        self.app_settings["modelName"] = model_name
-        max_context_tokens = self._normalize_max_context_tokens(
-            self.app_settings.get("maxContextTokens", 32768)
-        )
-
-        llm_relevant = {"ollamaMode", "modelName"}
-        agent_relevant = {"ollamaMode", "modelName", "maxContextTokens"}
-        orchestrator_relevant = {
-            "orchestrator",
+        llm_relevant = {
+            "llmProvider",
             "ollamaMode",
             "modelName",
+            "executionModelName",
+            "controlModelName",
+            "openaiBaseUrl",
+            "openaiApiKey",
+        }
+        agent_relevant = llm_relevant | {"maxContextTokens"}
+        orchestrator_relevant = {
+            "orchestrator",
+            "llmProvider",
+            "ollamaMode",
+            "modelName",
+            "executionModelName",
+            "controlModelName",
+            "openaiBaseUrl",
+            "openaiApiKey",
             "maxContextTokens",
         }
 
         if llm_relevant.intersection(next_settings.keys()):
-            if self._should_ensure_ollama_model(ollama_host):
-                self._ensure_model_available(model_name, ollama_host)
-            self.llm = LlmWrapper(model=model_name, host=ollama_host)
+            self._apply_runtime_config(runtime_config, rebuild_agent=False)
 
         if agent_relevant.intersection(next_settings.keys()):
-            self.agent = WebResearchAgent(
-                "main-agent",
-                self.llm,
-                self.mem,
-                config=ResearchConfig(max_context_tokens=max_context_tokens),
-            )
+            self._rebuild_execution_agent(runtime_config["max_context_tokens"])
 
         if orchestrator_relevant.intersection(next_settings.keys()):
             # Update orchestrator behavior based on setting
@@ -775,9 +951,9 @@ class KestrelAgentWorker:
                 task = self.tasks[self.current_task_id]
                 updated_orchestrator = ResearchOrchestrator(
                     [task],
-                    self.llm,
+                    self.control_llm,
                     profile=orchestrator_profile,
-                    max_context_tokens=max_context_tokens,
+                    max_context_tokens=runtime_config["max_context_tokens"],
                 )
                 self.orchestrators[self.current_task_id] = updated_orchestrator
                 self.orchestrator = updated_orchestrator
@@ -808,13 +984,17 @@ class KestrelAgentWorker:
                 except Exception as e:
                     logger.error(f"Error reinitializing orchestrator: {e}")
             logger.info(
-                "Orchestrator settings updated: profile=%s, model=%s, max_context=%s",
+                "Orchestrator settings updated: profile=%s, control_model=%s, execution_model=%s, endpoint=%s, max_context=%s",
                 self.app_settings.get("orchestrator"),
-                model_name,
-                max_context_tokens,
+                runtime_config["control_model_name"],
+                runtime_config["execution_model_name"],
+                runtime_config["endpoint"],
+                runtime_config["max_context_tokens"],
             )
 
-        logger.info("Updated app settings: %s", self.app_settings)
+        logger.info(
+            "Updated app settings: %s", self._redact_settings(self.app_settings)
+        )
 
     def _compute_elapsed_and_progress(
         self, task_id: str, task: Task
@@ -946,6 +1126,7 @@ class KestrelAgentWorker:
                         order=subtask.order,
                         description=subtask.description,
                         success_criteria=subtask.success_criteria,
+                        subtask_type=getattr(subtask, "subtask_type", "general"),
                         status=status,
                     )
                 )
@@ -1019,6 +1200,7 @@ class KestrelAgentWorker:
                     order=subtask.order,
                     description=subtask.description,
                     success_criteria=subtask.success_criteria,
+                    subtask_type=getattr(subtask, "subtask_type", "general"),
                     status=status,
                 )
             )
@@ -1059,6 +1241,13 @@ class KestrelAgentWorker:
         else:
             content = "No research notes available."
 
+        content = re.sub(
+            r"(?im)^\s*#\s+Final Research Report.*\n?",
+            "",
+            content,
+        ).strip()
+        findings_heading = "" if content.startswith("## ") else "## Findings\n"
+
         status_label = "Complete" if completed else "Stopped before completion"
         reason_line = (
             f"\n**Stop Reason:** {reason}" if (reason and not completed) else ""
@@ -1079,8 +1268,7 @@ class KestrelAgentWorker:
 - Summaries Created: {raw_metrics.get('summary_count', 0)}
 - Checkpoints: {raw_metrics.get('checkpoint_count', 0)}
 
-## Key Findings
-{content}
+{findings_heading}{content}
 
 ---
 *Report generated at {datetime.now().isoformat()}*"""

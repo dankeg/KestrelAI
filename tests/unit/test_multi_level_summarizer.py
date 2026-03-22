@@ -69,6 +69,7 @@ class TestMultiLevelSummarizer:
         assert summarizer.counter == token_counter
         assert len(summarizer.levels) == 4  # Default levels
         assert summarizer.levels[0].name == "detailed"  # Should be sorted
+        assert summarizer.langchain_adapter is None
 
     def test_summarizer_custom_levels(self, mock_llm, token_counter):
         """Test summarizer with custom levels."""

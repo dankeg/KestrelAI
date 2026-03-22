@@ -15,6 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from KestrelAI.shared.research_utils import timeouts_disabled
+
 try:
     from langchain_core.output_parsers import StrOutputParser
     from langchain_core.prompts import ChatPromptTemplate
@@ -32,15 +34,6 @@ except ImportError:
     from KestrelAI.agents.structured_parsing import parse_to_schema
 
 logger = logging.getLogger(__name__)
-
-
-def _timeouts_disabled() -> bool:
-    return os.getenv("GLOBAL_DISABLE_TIMEOUTS", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 @dataclass
@@ -189,7 +182,11 @@ class MultiLevelSummarizer:
         # Sort levels by compression ratio (most detailed first)
         self.levels.sort(key=lambda x: x.compression_ratio, reverse=True)
 
-        if ChatPromptTemplate is not None and StrOutputParser is not None:
+        if (
+            ChatPromptTemplate is not None
+            and StrOutputParser is not None
+            and self._supports_langchain_adapter(llm)
+        ):
             try:
                 self.langchain_adapter = LangChainChatAdapter.from_llm(llm)
                 parser = StrOutputParser()
@@ -227,6 +224,25 @@ class MultiLevelSummarizer:
                 self.langchain_adapter = None
                 self._fact_extraction_chain = None
                 self._summary_chain = None
+
+    @staticmethod
+    def _supports_langchain_adapter(llm: Any) -> bool:
+        """Only enable LangChain chains for actual configured LLM wrappers.
+
+        Bare mocks and minimal test doubles often expose a ``chat`` method but not a
+        real provider/model/host configuration. Treat those as non-LangChain inputs
+        so summarization stays fully local and deterministic in tests/fallback paths.
+        """
+        raw_model = getattr(llm, "model", None)
+        raw_provider = getattr(llm, "provider", None)
+        raw_host = getattr(llm, "host", None)
+        if not isinstance(raw_host, str):
+            client = getattr(llm, "client", None)
+            client_host = getattr(client, "host", None) if client is not None else None
+            raw_host = client_host if isinstance(client_host, str) else None
+        return isinstance(raw_model, str) and (
+            isinstance(raw_provider, str) or isinstance(raw_host, str)
+        )
 
     def create_summary_hierarchy(
         self, content: str, preserve_facts: bool = True
@@ -393,7 +409,7 @@ class MultiLevelSummarizer:
             f"Content:\n{content[:4000]}"
         )
         raw_timeout = float(os.getenv("AGENT_FACT_EXTRACTION_TIMEOUT_SECONDS", "20"))
-        if _timeouts_disabled() or raw_timeout <= 0:
+        if timeouts_disabled() or raw_timeout <= 0:
             fact_extraction_timeout_seconds: float | None = None
         else:
             fact_extraction_timeout_seconds = max(1.0, raw_timeout)

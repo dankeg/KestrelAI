@@ -209,6 +209,7 @@ __marimo__/
 # Local Artifacts
 .chroma/
 .DS_Store
+benchmarks/
 notes/**/*.txt
 notes/**/*.json
 exports/

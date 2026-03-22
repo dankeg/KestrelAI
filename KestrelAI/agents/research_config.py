@@ -42,6 +42,7 @@ class ResearchConfig:
         default_factory=list
     )  # Previous reports to build upon
     orchestrator_guidance: str = ""
+    orchestrator_control_hints: dict[str, Any] = field(default_factory=dict)
 
     # MCP settings
     use_mcp: bool = False

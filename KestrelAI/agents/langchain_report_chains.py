@@ -138,7 +138,10 @@ HARD QUALITY RULES:
 - Do not present weakly supported claims as confirmed facts
 - If evidence is mixed, say what is confirmed and what still needs verification
 - Use the claim verification brief as the primary authority on whether a claim is verified, tentative, or unsupported
-- When in doubt, downgrade the claim rather than upgrading it"""
+- When in doubt, downgrade the claim rather than upgrading it
+- Start directly with concrete findings, not an evaluation of the report quality
+- Never write sections like "Strengths", "Overall Assessment", "Suggestions for Improvement", or "Minor Suggestions"
+- Never praise, critique, or grade the report or the research process"""
 
         final_user_prompt = """Task: {task_description}
 
@@ -322,26 +325,25 @@ Prioritize actionable, specific information over comprehensive archival content.
 
 {report}"""
 
-        synthesis_system_prompt = """Create a focused, actionable final report from these research findings.
+        synthesis_system_prompt = """Create a comprehensive final research report from these research findings.
 
 Context:
 Task: {task_name}
 Description: {task_description}
 
 CRITICAL REQUIREMENTS:
-- Focus on SPECIFIC, ACTIONABLE opportunities the user can apply to
-- Include concrete details: exact deadlines, specific requirements, contact information, application links
-- Prioritize CURRENT opportunities (not generic database descriptions)
-- Remove generic advice and focus on specific programs, grants, or opportunities
-- Include exact eligibility requirements, application processes, and deadlines
-- Provide direct links and contact information where available
+- This is a final report, not a status brief.
+- Explain the main answer in a readable narrative, not just a stack of status bullets.
+- Include concrete details: dates, requirements, constraints, quantities, costs, contacts, application/access steps, or links when available.
+- Prioritize current, actionable findings over generic descriptions.
+- Group related findings and compare them when useful to the reader.
+- Preserve exact qualifiers where evidence is mixed or incomplete.
 
 Structure the report to be:
-- Fact-heavy with specific details and numbers
-- Actionable with clear next steps
-- Well-organized with clear sections
-- Professional but concise
-- Focused on opportunities the user can actually apply to
+- well-organized with clear sections
+- comprehensive enough to stand on its own
+- factual and source-aware
+- practical, but still recognizably a report rather than a checkpoint memo
 
 Avoid:
 - Generic database descriptions
@@ -350,7 +352,7 @@ Avoid:
 - Overly comprehensive archival content
 - Generic advice that applies to any research topic
 
-Focus on: Specific programs, exact deadlines, concrete requirements, direct application links.
+Focus on: specific findings, concrete facts, comparisons, and direct source-grounded conclusions.
 
 HARD QUALITY RULES:
 - Separate verified findings from tentative or partially verified findings
@@ -359,31 +361,65 @@ HARD QUALITY RULES:
 - If an item lacks strong evidence, keep it brief and label the uncertainty
 - End with practical next steps based only on the strongest evidence
 - Use the claim verification brief as the source of truth for what belongs in verified vs tentative sections
+- Use the structured evidence packet as the primary factual basis for source names, links, and concrete details
+- Start with the literal heading `## Executive Summary`
+- Never write sections like "Strengths", "Overall Assessment", "Suggestions for Improvement", or "Minor Suggestions"
+- Never evaluate the quality of the report or the research process
+
+URL REFERENCING (CRITICAL):
+- When referencing URLs, use only the URL flags (for example [URL_1], [URL_2]) from the URL reference table
+- Do NOT write out full URLs
+- Do NOT invent, normalize, or guess URLs that are not present in the evidence packet or URL table
+- If the exact URL is not provided, name the source and domain without adding a link
+- Prefer markdown links like [Source Name]([URL_1]) when the source/title is known
 
 REQUIRED OUTPUT STRUCTURE:
-## Verified Findings
+## Executive Summary
+- 1-3 paragraphs summarizing the strongest findings and practical takeaway
+
+## Scope and Method
+- Briefly explain what was investigated, what evidence types were used, and major evidence constraints
+
+## Findings
+- Present the main findings in a coherent, topic-centered structure
+- Use subsections if that improves clarity
+
+## Comparative Analysis
+- Compare the most relevant entities, opportunities, approaches, or findings
+- If comparison is weakly supported, say so briefly instead of inventing one
+
+## Limitations and Open Questions
+- State important unresolved evidence gaps, ambiguities, or conflicts
+
+## Recommended Next Steps
+- Provide practical, evidence-grounded next actions for the user
+
+## Evidence Status Appendix
+### Verified Findings
 - Only claims supported by the verification brief and authoritative evidence
 
-## Tentative Findings
+### Tentative Findings
 - Claims with partial support or unresolved ambiguity
 
-## Open Uncertainties
-- Missing dates, eligibility gaps, or conflicts still needing verification
+### Open Uncertainties
+- Missing dates, eligibility gaps, or conflicts still needing verification"""
 
-## Next Verification Steps
-- Specific official pages or source types that should be checked next"""
+        synthesis_user_prompt = """Structured evidence packet (primary factual basis):
+{structured_evidence_packet_with_flags}
 
-        synthesis_user_prompt = """Evidence quality brief:
-{evidence_brief}
+Evidence quality brief:
+{evidence_brief_with_flags}
 
 Claim verification brief:
-{verification_brief}
+{verification_brief_with_flags}
 
-Deduplicated findings from all research:
+Clean deduplicated findings from all research (secondary context):
 
-{combined_findings}"""
+{combined_findings_with_flags}
 
-        repair_system_prompt = """Rewrite an INVALID draft into a valid final research report.
+{url_reference_table}"""
+
+        repair_system_prompt = """Rewrite an INVALID draft into a valid comprehensive final research report.
 
 The draft is invalid because it contains meta-critique/review language (for example: "this report is strong", "overall assessment", "would you like me to...").
 
@@ -395,9 +431,13 @@ HARD REQUIREMENTS:
 - Use the evidence provided to produce factual, task-aligned findings.
 - Prefer concrete entities, dates, requirements, links, and actionable next steps.
 - Respect the claim verification brief. Unsupported claims should not appear as verified findings.
+- Use the structured evidence packet as the primary factual basis for source names, links, and concrete details.
+- Use only URL flags from the URL reference table; never write full URLs or invent links.
+- The result must read like a complete report, not a short status brief.
+- Include an evidence-status appendix.
 
 If information is incomplete, state uncertainty briefly and continue with available facts.
-Start directly with report content (no preamble)."""
+Start directly with `## Executive Summary` (no preamble)."""
 
         repair_user_prompt = """Task: {task_name}
 Description: {task_description}
@@ -406,13 +446,18 @@ Invalid draft to repair:
 {invalid_draft}
 
 Evidence quality brief:
-{evidence_brief}
+{evidence_brief_with_flags}
 
 Claim verification brief:
-{verification_brief}
+{verification_brief_with_flags}
+
+Structured evidence packet:
+{structured_evidence_packet_with_flags}
 
 Evidence to ground the corrected report:
-{combined_findings}"""
+{combined_findings_with_flags}
+
+{url_reference_table}"""
 
         self._dedupe_chain = (
             ChatPromptTemplate.from_messages(
@@ -462,19 +507,24 @@ Evidence to ground the corrected report:
         *,
         task_name: str,
         task_description: str,
-        combined_findings: str,
-        evidence_brief: str = "",
-        verification_brief: str = "",
+        combined_findings_with_flags: str,
+        evidence_brief_with_flags: str = "",
+        verification_brief_with_flags: str = "",
+        structured_evidence_packet_with_flags: str = "",
+        url_reference_table: str = "",
     ) -> str:
         return self._synthesis_chain.invoke(
             {
                 "task_name": task_name,
                 "task_description": task_description,
-                "combined_findings": combined_findings,
-                "evidence_brief": evidence_brief
+                "combined_findings_with_flags": combined_findings_with_flags,
+                "evidence_brief_with_flags": evidence_brief_with_flags
                 or "No evidence-quality brief available.",
-                "verification_brief": verification_brief
+                "verification_brief_with_flags": verification_brief_with_flags
                 or "No claim verification brief available.",
+                "structured_evidence_packet_with_flags": structured_evidence_packet_with_flags
+                or "No structured evidence packet available.",
+                "url_reference_table": url_reference_table or "",
             }
         )
 
@@ -483,19 +533,24 @@ Evidence to ground the corrected report:
         *,
         task_name: str,
         task_description: str,
-        combined_findings: str,
-        evidence_brief: str = "",
-        verification_brief: str = "",
+        combined_findings_with_flags: str,
+        evidence_brief_with_flags: str = "",
+        verification_brief_with_flags: str = "",
+        structured_evidence_packet_with_flags: str = "",
+        url_reference_table: str = "",
     ) -> str:
         return await self._synthesis_chain.ainvoke(
             {
                 "task_name": task_name,
                 "task_description": task_description,
-                "combined_findings": combined_findings,
-                "evidence_brief": evidence_brief
+                "combined_findings_with_flags": combined_findings_with_flags,
+                "evidence_brief_with_flags": evidence_brief_with_flags
                 or "No evidence-quality brief available.",
-                "verification_brief": verification_brief
+                "verification_brief_with_flags": verification_brief_with_flags
                 or "No claim verification brief available.",
+                "structured_evidence_packet_with_flags": structured_evidence_packet_with_flags
+                or "No structured evidence packet available.",
+                "url_reference_table": url_reference_table or "",
             }
         )
 
@@ -505,20 +560,25 @@ Evidence to ground the corrected report:
         task_name: str,
         task_description: str,
         invalid_draft: str,
-        combined_findings: str,
-        evidence_brief: str = "",
-        verification_brief: str = "",
+        combined_findings_with_flags: str,
+        evidence_brief_with_flags: str = "",
+        verification_brief_with_flags: str = "",
+        structured_evidence_packet_with_flags: str = "",
+        url_reference_table: str = "",
     ) -> str:
         return self._repair_synthesis_chain.invoke(
             {
                 "task_name": task_name,
                 "task_description": task_description,
                 "invalid_draft": invalid_draft,
-                "combined_findings": combined_findings,
-                "evidence_brief": evidence_brief
+                "combined_findings_with_flags": combined_findings_with_flags,
+                "evidence_brief_with_flags": evidence_brief_with_flags
                 or "No evidence-quality brief available.",
-                "verification_brief": verification_brief
+                "verification_brief_with_flags": verification_brief_with_flags
                 or "No claim verification brief available.",
+                "structured_evidence_packet_with_flags": structured_evidence_packet_with_flags
+                or "No structured evidence packet available.",
+                "url_reference_table": url_reference_table or "",
             }
         )
 
@@ -528,19 +588,24 @@ Evidence to ground the corrected report:
         task_name: str,
         task_description: str,
         invalid_draft: str,
-        combined_findings: str,
-        evidence_brief: str = "",
-        verification_brief: str = "",
+        combined_findings_with_flags: str,
+        evidence_brief_with_flags: str = "",
+        verification_brief_with_flags: str = "",
+        structured_evidence_packet_with_flags: str = "",
+        url_reference_table: str = "",
     ) -> str:
         return await self._repair_synthesis_chain.ainvoke(
             {
                 "task_name": task_name,
                 "task_description": task_description,
                 "invalid_draft": invalid_draft,
-                "combined_findings": combined_findings,
-                "evidence_brief": evidence_brief
+                "combined_findings_with_flags": combined_findings_with_flags,
+                "evidence_brief_with_flags": evidence_brief_with_flags
                 or "No evidence-quality brief available.",
-                "verification_brief": verification_brief
+                "verification_brief_with_flags": verification_brief_with_flags
                 or "No claim verification brief available.",
+                "structured_evidence_packet_with_flags": structured_evidence_packet_with_flags
+                or "No structured evidence packet available.",
+                "url_reference_table": url_reference_table or "",
             }
         )

@@ -392,7 +392,7 @@ class LangGraphWorkerStepRunner:
                 total_thinks += metrics.get("total_thoughts", 0)
                 total_summaries += metrics.get("total_summaries", 0)
                 total_checkpoints += metrics.get("total_checkpoints", 0)
-                total_actions += metrics.get("total_llm_calls", 0)
+                total_actions += metrics.get("action_count", 0)
 
         self.worker.task_metrics[task_id].update(
             {
@@ -444,7 +444,8 @@ class LangGraphWorkerStepRunner:
                             activity_type = "checkpoint"
                         else:
                             activity_type = (
-                                getattr(agent_state, "last_step_activity", "") or "analysis"
+                                getattr(agent_state, "last_step_activity", "")
+                                or "analysis"
                             )
 
                         message = self._compact_activity_message(
@@ -469,7 +470,6 @@ class LangGraphWorkerStepRunner:
                         ] = agent_state.checkpoint_count
 
         if has_meaningful_activity:
-            self.worker.task_metrics[task_id]["action_count"] += 1
             self.worker.redis_client.send_activity(task_id, activity_type, message)
 
         return {
@@ -494,8 +494,11 @@ class LangGraphWorkerStepRunner:
         if task.status == TaskStatus.COMPLETE:
             display_progress = 100.0
 
-        if hasattr(self.worker.agent, "get_global_metrics"):
-            agent_metrics = self.worker.agent.get_global_metrics()
+        metric_getter = getattr(self.worker.agent, "get_global_metrics", None)
+        if not callable(metric_getter):
+            metric_getter = getattr(self.worker.agent, "get_metrics", None)
+        if callable(metric_getter):
+            agent_metrics = metric_getter()
             self.worker.global_metrics.update(agent_metrics)
 
         metrics_model = TaskMetrics(

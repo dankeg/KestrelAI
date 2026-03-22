@@ -42,3 +42,16 @@ class LlmWrapper:
             raise RuntimeError(
                 f"LLM chat failed (model: {self.model}, provider: {self.provider}, host: {self.host}): {str(e)}"
             ) from e
+
+    def chat_response(self, messages: list[dict]):
+        """Send chat messages and retain normalized reasoning/tool metadata."""
+        try:
+            return self._adapter.chat_response(messages)
+        except Exception as e:
+            raise RuntimeError(
+                f"LLM chat failed (model: {self.model}, provider: {self.provider}, host: {self.host}): {str(e)}"
+            ) from e
+
+    def get_capabilities(self) -> dict[str, object]:
+        """Return observed runtime capabilities from the adapter."""
+        return self._adapter.get_capabilities()

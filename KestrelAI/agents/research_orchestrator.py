@@ -12,7 +12,6 @@ import re
 import time
 from datetime import datetime
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -21,13 +20,26 @@ from KestrelAI.agents.config import get_orchestrator_config
 from KestrelAI.agents.context_manager import ContextManager, TokenBudget, TokenCounter
 from KestrelAI.agents.multi_level_summarizer import MultiLevelSummarizer
 from KestrelAI.memory.vector_store import MemoryStore
-from KestrelAI.shared.models import Task, TaskStatus
+from KestrelAI.shared.models import SubtaskType, Task, TaskStatus
+from KestrelAI.shared.research_utils import (
+    RESEARCH_AUDIENCE_TERMS,
+    RESEARCH_EVIDENCE_TERMS,
+    RESEARCH_SOURCE_CLASS_TERMS,
+    build_research_task_profile,
+    extract_domains_from_text,
+    infer_research_task_family,
+    subtask_looks_low_signal,
+    task_targets_discrete_opportunities,
+    timeouts_disabled,
+)
+from KestrelAI.shared.runtime_settings import normalize_max_context_tokens
 
 from .base_agent import OrchestratorAgent
 from .langchain_adapter import LangChainChatAdapter
 from .langchain_orchestrator_chains import OrchestratorLangChainControlChains
 from .langchain_report_chains import OrchestratorLangChainChains
 from .searxng_service import SearXNGService
+from .url_utils import URLFlagManager, clean_url
 from .web_research_agent import ResearchConfig, WebResearchAgent
 
 try:
@@ -58,14 +70,41 @@ META_CRITIQUE_ALLOWED_TASK_PATTERNS = (
     r"\bfeedback\b",
 )
 
-LOW_SIGNAL_PLAN_DOMAINS = (
-    "reddit.com",
-    "quora.com",
-    "medium.com",
-    "substack.com",
-    "shopify.com",
-    "linkedin.com",
+META_CRITIQUE_HARD_BAN_PATTERNS = (
+    r"(?im)^\s*\*{0,2}strengths\*{0,2}\s*:\s*$",
+    r"(?im)^\s*\*{0,2}minor suggestions?(?: for (?:refinement|improvement))?\*{0,2}\s*:\s*$",
+    r"(?im)^\s*\*{0,2}overall(?: assessment)?\*{0,2}\s*:\s*$",
+    r"\bthis is an outstanding final research report\b",
+    r"\bhere(?:'|’)s a breakdown of why this report is strong\b",
 )
+
+FINAL_REPORT_CORE_SECTIONS = (
+    "## Executive Summary",
+    "## Scope and Method",
+    "## Findings",
+    "## Comparative Analysis",
+    "## Limitations and Open Questions",
+    "## Recommended Next Steps",
+)
+
+FINAL_REPORT_REQUIRED_SECTIONS = FINAL_REPORT_CORE_SECTIONS + (
+    "## Evidence Status Appendix",
+)
+
+REPORT_CONTROL_LINE_PREFIXES = (
+    "[ORCHESTRATOR FEEDBACK]",
+    "[ORCHESTRATOR GUARD]",
+    "[SEARCH]",
+    "[NO RESULTS]",
+    "[SKIP]",
+    "[THOUGHT]",
+    "[SUMMARY]",
+    "[COMPLETE]",
+    "[CHECKPOINT]",
+    "[PROGRESS]",
+    "[MCP_TOOL]",
+)
+
 CLAIM_STOPWORDS = {
     "the",
     "a",
@@ -101,27 +140,6 @@ CLAIM_STOPWORDS = {
 }
 
 
-def _timeouts_disabled() -> bool:
-    return os.getenv("GLOBAL_DISABLE_TIMEOUTS", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def _resolve_max_context_tokens(raw_value: Any | None) -> int:
-    """Resolve max context tokens from settings/env with sane bounds."""
-    fallback = 32768
-    if raw_value is None:
-        raw_value = os.getenv("MAX_CONTEXT_TOKENS", fallback)
-    try:
-        value = int(raw_value)
-    except (TypeError, ValueError):
-        return fallback
-    return max(2048, min(value, 262144))
-
-
 class OrchestratorDecision(BaseModel):
     reasoning: str
     decision: Literal["continue", "switch", "done"]
@@ -134,6 +152,7 @@ class Subtask(BaseModel):
     order: int
     description: str
     success_criteria: str
+    subtask_type: SubtaskType = SubtaskType.GENERAL
 
 
 class PlanningPlan(BaseModel):
@@ -155,6 +174,45 @@ class VerifiedEvidenceItem(BaseModel):
     title: str
     domain: str
     url: str = ""
+    query: str = ""
+    source_excerpt: str = ""
+    source_tier: str = ""
+    authority_score: int = 0
+    official: bool = False
+
+
+class SourceEvidenceRecord(BaseModel):
+    subtask: int
+    title: str
+    domain: str
+    url: str = ""
+    official: bool = False
+    authority_score: int = 0
+    source_tier: str = ""
+    fetched: bool = False
+    query: str = ""
+    summary: str = ""
+    content_excerpt: str = ""
+    snippet: str = ""
+    tokens: set[str] = Field(default_factory=set)
+    title_tokens: set[str] = Field(default_factory=set)
+    domain_tokens: set[str] = Field(default_factory=set)
+    query_tokens: set[str] = Field(default_factory=set)
+    evidence_tokens: set[str] = Field(default_factory=set)
+
+
+class EvidenceLead(BaseModel):
+    title: str
+    domain: str
+    url: str = ""
+    official: bool = False
+    source_tier: str = ""
+    authority_score: int = 0
+    query: str = ""
+    evidence_excerpt: str = ""
+    supported_summary: str = ""
+    supported_details: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
 
 
 CLAIM_RELATION_HINTS = (
@@ -233,6 +291,7 @@ class TaskState:
     def __init__(self, task: Task, max_context_tokens: int = 32768):
         self.task = task
         self.max_context_tokens = max_context_tokens
+        self.orchestrator = None
         self.subtask_index = 0
         self.completed_subtasks: set[int] = set()
         self.notes_history: list[str] = []
@@ -250,6 +309,7 @@ class TaskState:
         self.subtask_findings: dict[int, list[str]] = {}
         self.subtask_reports: dict[int, str] = {}
         self.subtask_guidance: dict[int, str] = {}
+        self.subtask_control_hints: dict[int, dict[str, Any]] = {}
         self.subtask_metric_snapshots: dict[int, dict[str, int]] = {}
         self.subtask_stagnation_rounds: dict[int, int] = {}
         self.subtask_last_review_action_count: dict[int, int] = {}
@@ -284,6 +344,7 @@ class TaskState:
         self.subtask_index = max(self.completed_subtasks) + 1
         self.stuck_count = 0  # Reset stuck count on progress
         self.subtask_guidance.pop(subtask_index, None)
+        self.subtask_control_hints.pop(subtask_index, None)
         self.subtask_metric_snapshots.pop(subtask_index, None)
         self.subtask_stagnation_rounds.pop(subtask_index, None)
         self.subtask_last_review_action_count.pop(subtask_index, None)
@@ -304,6 +365,18 @@ class TaskState:
     def get_subtask_guidance(self, subtask_index: int) -> str:
         """Get active orchestrator guidance for a subtask."""
         return self.subtask_guidance.get(subtask_index, "")
+
+    def set_subtask_control_hints(
+        self, subtask_index: int, hints: dict[str, Any] | None
+    ) -> None:
+        normalized = dict(hints or {})
+        if normalized:
+            self.subtask_control_hints[subtask_index] = normalized
+        else:
+            self.subtask_control_hints.pop(subtask_index, None)
+
+    def get_subtask_control_hints(self, subtask_index: int) -> dict[str, Any]:
+        return dict(self.subtask_control_hints.get(subtask_index, {}))
 
     def create_subtask_agent(
         self,
@@ -333,6 +406,7 @@ class TaskState:
             previous_findings=previous_findings,
             previous_reports=previous_reports,  # Pass previous reports for accumulation
             orchestrator_guidance=self.get_subtask_guidance(subtask_index),
+            orchestrator_control_hints=self.get_subtask_control_hints(subtask_index),
             max_context_tokens=self.max_context_tokens,
             use_mcp=mcp_manager is not None,
             mcp_manager=mcp_manager,
@@ -341,6 +415,8 @@ class TaskState:
         agent = WebResearchAgent(
             agent_id=subtask_id, llm=llm, memory=memory, config=config
         )
+        agent.orchestrator = getattr(self, "orchestrator", None)
+        agent.parent_task_name = self.task.name
 
         self.subtask_agents[subtask_index] = agent
         self.subtask_findings[subtask_index] = []
@@ -377,7 +453,7 @@ class ResearchOrchestrator(OrchestratorAgent):
         self.current = tasks[0].name if tasks else None
         self.task_states: dict[str, TaskState] = {}
         self.langgraph_runner = None
-        self.max_context_tokens = _resolve_max_context_tokens(max_context_tokens)
+        self.max_context_tokens = normalize_max_context_tokens(max_context_tokens)
 
         # Initialize memory store for subtask agents
         self.memory = MemoryStore()
@@ -387,9 +463,9 @@ class ResearchOrchestrator(OrchestratorAgent):
 
         # Initialize task states
         for task in tasks:
-            self.task_states[task.name] = TaskState(
-                task, max_context_tokens=self.max_context_tokens
-            )
+            task_state = TaskState(task, max_context_tokens=self.max_context_tokens)
+            task_state.orchestrator = self
+            self.task_states[task.name] = task_state
 
         # Loop prevention settings from config
         self.max_total_iterations = self.config.max_total_iterations
@@ -503,15 +579,52 @@ class ResearchOrchestrator(OrchestratorAgent):
             self.mcp_connected = False
 
     def _fallback_review_decision(
-        self, task_name: str, reason: str
+        self, task: Task, task_state: TaskState, reason: str
     ) -> OrchestratorDecision:
         """Fallback decision when structured review fails."""
+        metrics = self._get_current_subtask_agent_metrics(task, task_state)
+        stagnation_rounds = task_state.subtask_stagnation_rounds.get(
+            task_state.subtask_index, 0
+        )
+        readiness_ok, readiness_reason = self._evaluate_subtask_completion_readiness(
+            task, task_state
+        )
+        plateau_ok, plateau_reason = self._evaluate_plateau_progression_readiness(
+            task, task_state
+        )
+        if plateau_ok or (
+            readiness_ok
+            and metrics["action_count"] >= self.max_iterations_per_subtask
+            and stagnation_rounds >= 2
+        ):
+            return OrchestratorDecision(
+                reasoning=(
+                    f"Structured review unavailable; using deterministic progression fallback. "
+                    f"{plateau_reason if plateau_ok else readiness_reason}"
+                ).strip(),
+                decision="switch",
+                feedback=(
+                    "Advance to the next subtask, carry forward the strongest evidence, "
+                    "and preserve unresolved gaps as explicit uncertainty."
+                ),
+                subtask="proceed",
+                next_task=task.name,
+            )
+
+        planner_failures = int(metrics.get("consecutive_planner_failures", 0) or 0)
+        feedback = (
+            "Planner instability detected. Pivot to simpler, high-signal searches focused on official sources, "
+            "primary organizations, and directory/listing pages tied directly to the current success criteria."
+            if planner_failures > 0
+            else "Continue the current subtask, but pivot away from low-yield queries toward official sources, "
+            "primary organizations, and direct verification searches."
+        )
         return OrchestratorDecision(
             reasoning=reason,
             decision="continue",
-            feedback="Continue with current research direction",
+            feedback=feedback,
             subtask="stay",
-            next_task=task_name,
+            next_task=task.name,
         )
 
     def _build_current_subtask_info(self, task_state: TaskState) -> str:
@@ -535,10 +648,18 @@ class ResearchOrchestrator(OrchestratorAgent):
         """Best-effort pull of current subtask agent activity metrics."""
         empty = {
             "action_count": 0,
+            "search_attempt_count": 0,
             "search_count": 0,
+            "zero_result_search_count": 0,
             "summary_count": 0,
             "checkpoint_count": 0,
             "query_count": 0,
+            "planner_fallback_count": 0,
+            "consecutive_planner_failures": 0,
+            "pathway_count": 0,
+            "pathway_attempted_count": 0,
+            "pathway_hit_count": 0,
+            "pathway_uncovered_count": 0,
         }
         agent = task_state.get_current_subtask_agent()
         if (
@@ -549,12 +670,42 @@ class ResearchOrchestrator(OrchestratorAgent):
             return empty
 
         agent_state = agent._state[task.name]
+        search_pathways = list(getattr(agent_state, "search_pathways", []) or [])
+        pathway_attempted_count = sum(
+            1
+            for pathway in search_pathways
+            if int(pathway.get("attempt_count", 0) or 0) > 0
+        )
+        pathway_hit_count = sum(
+            1
+            for pathway in search_pathways
+            if int(pathway.get("hit_count", 0) or 0) > 0
+        )
         return {
             "action_count": int(getattr(agent_state, "action_count", 0)),
+            "search_attempt_count": int(
+                getattr(agent_state, "search_attempt_count", 0)
+            ),
             "search_count": int(getattr(agent_state, "search_count", 0)),
+            "zero_result_search_count": int(
+                getattr(agent_state, "zero_result_search_count", 0)
+            ),
             "summary_count": int(getattr(agent_state, "summary_count", 0)),
             "checkpoint_count": int(getattr(agent_state, "checkpoint_count", 0)),
             "query_count": int(len(getattr(agent_state, "queries", set()) or set())),
+            "planner_fallback_count": int(
+                getattr(agent_state, "planner_fallback_count", 0)
+            ),
+            "consecutive_planner_failures": int(
+                getattr(agent_state, "consecutive_planner_failures", 0)
+            ),
+            "pathway_count": len(search_pathways),
+            "pathway_attempted_count": pathway_attempted_count,
+            "pathway_hit_count": pathway_hit_count,
+            "pathway_uncovered_count": max(
+                0,
+                len(search_pathways) - pathway_attempted_count,
+            ),
         }
 
     def _get_current_subtask_agent_state(self, task: Task, task_state: TaskState):
@@ -564,11 +715,73 @@ class ResearchOrchestrator(OrchestratorAgent):
             return None
         return agent._state.get(task.name)
 
+    def _build_subtask_control_hints(
+        self,
+        task: Task,
+        task_state: TaskState,
+        subtask_index: int,
+    ) -> dict[str, Any]:
+        hints: dict[str, Any] = {}
+        if subtask_index != task_state.subtask_index:
+            return hints
+
+        current_subtask = None
+        if (
+            task_state.research_plan
+            and task_state.research_plan.subtasks
+            and 0 <= subtask_index < len(task_state.research_plan.subtasks)
+        ):
+            current_subtask = task_state.research_plan.subtasks[subtask_index]
+
+        metrics = self._get_current_subtask_agent_metrics(task, task_state)
+        if (
+            current_subtask is None
+            or not self._subtask_requires_broad_discovery(current_subtask)
+            or metrics["pathway_count"] <= 0
+        ):
+            return hints
+
+        agent_state = self._get_current_subtask_agent_state(task, task_state)
+        if agent_state is None:
+            return hints
+
+        search_pathways = list(getattr(agent_state, "search_pathways", []) or [])
+        ranked_pathways = sorted(
+            search_pathways,
+            key=lambda pathway: (
+                int(pathway.get("hit_count", 0) or 0) > 0,
+                int(pathway.get("attempt_count", 0) or 0),
+                str(pathway.get("id", "")),
+            ),
+        )
+        preferred_pathway_ids = [
+            str(pathway.get("id", "") or "")
+            for pathway in ranked_pathways
+            if str(pathway.get("id", "") or "")
+        ]
+        if not preferred_pathway_ids:
+            return hints
+
+        hints["discovery_mode"] = "pathway_first"
+        hints["preferred_pathway_ids"] = preferred_pathway_ids
+        hints["pathway_count"] = metrics["pathway_count"]
+        hints["pathway_attempted_count"] = metrics["pathway_attempted_count"]
+        hints["pathway_hit_count"] = metrics["pathway_hit_count"]
+        hints["pathway_uncovered_count"] = metrics["pathway_uncovered_count"]
+        hints["stagnating"] = (
+            task_state.subtask_stagnation_rounds.get(subtask_index, 0) >= 2
+        )
+        return hints
+
     def _set_subtask_guidance(
-        self, task_state: TaskState, subtask_index: int, guidance: str
+        self, task: Task, task_state: TaskState, subtask_index: int, guidance: str
     ) -> None:
-        """Persist guidance and sync it onto the existing subtask agent config."""
+        """Persist guidance and structured control hints onto the existing subtask agent config."""
         task_state.set_subtask_guidance(subtask_index, guidance)
+        control_hints = self._build_subtask_control_hints(
+            task, task_state, subtask_index
+        )
+        task_state.set_subtask_control_hints(subtask_index, control_hints)
         existing_agent = task_state.subtask_agents.get(subtask_index)
         if (
             existing_agent is not None
@@ -578,6 +791,10 @@ class ResearchOrchestrator(OrchestratorAgent):
             existing_agent.config.orchestrator_guidance = (
                 task_state.get_subtask_guidance(subtask_index)
             )
+            if hasattr(existing_agent.config, "orchestrator_control_hints"):
+                existing_agent.config.orchestrator_control_hints = (
+                    task_state.get_subtask_control_hints(subtask_index)
+                )
 
     def _update_subtask_stagnation(self, task: Task, task_state: TaskState) -> int:
         """
@@ -591,6 +808,8 @@ class ResearchOrchestrator(OrchestratorAgent):
         tracked = {
             "search_count": metrics["search_count"],
             "query_count": metrics["query_count"],
+            "pathway_attempted_count": metrics["pathway_attempted_count"],
+            "pathway_hit_count": metrics["pathway_hit_count"],
             "authoritative_results": evidence_stats["authoritative_results"],
             "official_results": evidence_stats["official_results"],
             "fetched_results": evidence_stats["fetched_results"],
@@ -660,36 +879,93 @@ class ResearchOrchestrator(OrchestratorAgent):
             return True
         return False
 
-    def _fallback_final_report_from_findings(
-        self,
-        task: Task,
-        combined_findings: str,
-        *,
-        reason: str,
-    ) -> str:
-        """
-        Deterministic fallback for invalid synthesis output. This avoids returning
-        meta-critique text when the model drifts.
-        """
-        sanitized = re.sub(
-            r"(?is)\b(overall assessment|strengths:|minor suggestions? for improvement).*",
-            "",
-            combined_findings or "",
-        ).strip()
-        body = self._truncate_text_by_token_budget(
-            sanitized or "No findings captured.",
-            max_tokens=3200,
-            fallback_label="final-report-fallback",
+    @staticmethod
+    def _strip_control_channel_annotations(text: str) -> str:
+        """Remove orchestration/progress control markers from evidence text."""
+        if not text:
+            return ""
+        cleaned_lines: list[str] = []
+        for raw_line in re.sub(r"\r\n?", "\n", str(text)).splitlines():
+            stripped = raw_line.strip()
+            if any(
+                stripped.startswith(prefix) for prefix in REPORT_CONTROL_LINE_PREFIXES
+            ):
+                continue
+            cleaned_lines.append(raw_line.rstrip())
+        cleaned = "\n".join(cleaned_lines)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned
+
+    def _has_disallowed_report_review_language(
+        self, content: str, task_description: str
+    ) -> bool:
+        if not content:
+            return True
+        task_desc = (task_description or "").lower()
+        if any(
+            re.search(pat, task_desc) for pat in META_CRITIQUE_ALLOWED_TASK_PATTERNS
+        ):
+            return False
+        return any(
+            re.search(pat, content, flags=re.IGNORECASE)
+            for pat in META_CRITIQUE_HARD_BAN_PATTERNS
         )
-        return (
-            "# Final Research Report\n\n"
-            f"## Task\n{task.description}\n\n"
-            f"## Verified Findings\n{body}\n\n"
-            "## Tentative Findings\n- Additional items may require verification.\n\n"
-            "## Open Uncertainties\n- Evidence was incomplete, so some findings could not be fully verified.\n\n"
-            "## Next Verification Steps\n- Re-run focused verification on official program, .gov, .edu, or primary organization pages.\n\n"
-            f"_Fallback reason: {reason}_"
-        )
+
+    @staticmethod
+    def _report_body_without_appendix(report_text: str) -> str:
+        text = (report_text or "").strip()
+        appendix_idx = text.find("## Evidence Status Appendix")
+        if appendix_idx >= 0:
+            return text[:appendix_idx].strip()
+        return text
+
+    @staticmethod
+    def _dedupe_top_level_sections(report_text: str) -> str:
+        text = (report_text or "").strip()
+        if not text:
+            return text
+        pattern = re.compile(r"(?ms)^##\s+[^\n]+.*?(?=^##\s+[^\n]+|\Z)")
+        matches = list(pattern.finditer(text))
+        if not matches:
+            return text
+
+        kept_order: list[str] = []
+        kept_blocks: dict[str, str] = {}
+        for match in matches:
+            block = match.group(0).strip()
+            heading = block.splitlines()[0].strip()
+            if heading not in kept_blocks:
+                kept_order.append(heading)
+                kept_blocks[heading] = block
+            elif len(block) > len(kept_blocks[heading]):
+                kept_blocks[heading] = block
+        return "\n\n".join(kept_blocks[heading] for heading in kept_order).strip()
+
+    def _has_required_final_report_structure(self, report_text: str) -> bool:
+        text = (report_text or "").strip()
+        if not text:
+            return False
+        missing = [
+            section for section in FINAL_REPORT_REQUIRED_SECTIONS if section not in text
+        ]
+        if missing:
+            return False
+        body = self._report_body_without_appendix(text)
+        if len(re.findall(r"[A-Za-z]{3,}", body)) < 80:
+            return False
+        return True
+
+    def _final_report_is_invalid(self, content: str, task_description: str) -> bool:
+        text = (content or "").strip()
+        if not text:
+            return True
+        if self._is_meta_critique_output(text, task_description):
+            return True
+        if self._has_disallowed_report_review_language(text, task_description):
+            return True
+        if not self._has_required_final_report_structure(text):
+            return True
+        return False
 
     def _build_guidance_from_decision(
         self,
@@ -700,10 +976,24 @@ class ResearchOrchestrator(OrchestratorAgent):
     ) -> str:
         """Generate concrete guidance for subtask agents from decision + metrics."""
         guidance_parts: list[str] = []
-        if decision.feedback and decision.feedback.strip():
-            guidance_parts.append(decision.feedback.strip())
 
         metrics = self._get_current_subtask_agent_metrics(task, task_state)
+        evidence_stats = self._get_current_subtask_evidence_stats(task, task_state)
+        feedback = self._sanitize_feedback_for_agent(
+            task,
+            task_state,
+            decision.feedback or "",
+            metrics=metrics,
+            evidence_stats=evidence_stats,
+        )
+        if feedback and not self._should_suppress_ungrounded_feedback(
+            task,
+            task_state,
+            feedback,
+            metrics=metrics,
+            evidence_stats=evidence_stats,
+        ):
+            guidance_parts.append(feedback)
         current_subtask = None
         if (
             task_state.research_plan
@@ -713,6 +1003,7 @@ class ResearchOrchestrator(OrchestratorAgent):
             current_subtask = task_state.research_plan.subtasks[
                 task_state.subtask_index
             ]
+        task_family = self._guidance_task_family(task, task_state)
 
         min_searches = max(0, int(os.getenv("ORCHESTRATOR_MIN_SUBTASK_SEARCHES", "2")))
         min_unique_queries = max(
@@ -726,29 +1017,49 @@ class ResearchOrchestrator(OrchestratorAgent):
         )
         missing_searches = max(0, min_searches - metrics["search_count"])
         missing_queries = max(0, min_unique_queries - metrics["query_count"])
-        evidence_stats = self._get_current_subtask_evidence_stats(task, task_state)
         missing_authoritative = max(
             0, min_authoritative_results - evidence_stats["authoritative_results"]
         )
         missing_official = max(
             0, min_official_results - evidence_stats["official_results"]
         )
+        pathway_guidance_applies = (
+            current_subtask is not None
+            and self._subtask_requires_broad_discovery(current_subtask)
+            and metrics["pathway_count"] > 0
+        )
+        min_pathways = max(
+            1,
+            int(
+                os.getenv(
+                    "ORCHESTRATOR_MIN_DISCOVERY_PATHWAYS_ATTEMPTED",
+                    "2",
+                )
+            ),
+        )
+        effective_min_pathways = min(min_pathways, metrics["pathway_count"])
+        missing_pathways = max(
+            0,
+            effective_min_pathways - metrics["pathway_attempted_count"],
+        )
         if missing_searches > 0:
             guidance_parts.append(
                 f"Run at least {missing_searches} more targeted searches tied directly to the current success criteria."
             )
-        if missing_queries > 0:
+        if pathway_guidance_applies and missing_pathways > 0:
+            guidance_parts.append(
+                f"Cover at least {missing_pathways} more discovery pathway or source-class routes before advancing."
+            )
+        elif missing_queries > 0:
             guidance_parts.append(
                 f"Increase search diversity with at least {missing_queries} additional distinct query variants."
             )
         if missing_authoritative > 0:
             guidance_parts.append(
-                f"Find at least {missing_authoritative} more authoritative sources (.gov, .edu, official program pages, or primary organizations)."
+                self._authoritative_guidance_text(task_family, missing_authoritative)
             )
         if missing_official > 0:
-            guidance_parts.append(
-                "Verify key claims directly on an official source before advancing."
-            )
+            guidance_parts.append(self._primary_verification_guidance_text(task_family))
         if metrics["checkpoint_count"] == 0 and metrics["action_count"] >= 3:
             guidance_parts.append(
                 "Create a checkpoint summary to lock in evidence before deciding to transition."
@@ -758,17 +1069,25 @@ class ResearchOrchestrator(OrchestratorAgent):
             task_state.subtask_index, 0
         )
         if stagnation_rounds >= 2:
-            guidance_parts.append(
-                "Current line of inquiry is stagnating; pivot to a different angle, source type, or constraint."
-            )
+            if pathway_guidance_applies and metrics["pathway_uncovered_count"] > 0:
+                guidance_parts.append(
+                    "Current line of inquiry is stagnating; pivot to an uncovered pathway or source class instead of paraphrasing prior queries."
+                )
+            else:
+                guidance_parts.append(
+                    "Current line of inquiry is stagnating; pivot to a different angle, source type, or constraint."
+                )
 
         agent_state = self._get_current_subtask_agent_state(task, task_state)
         if agent_state is not None and getattr(agent_state, "search_history", None):
-            recent_queries = []
+            recent_queries: list[str] = []
+            seen_recent_queries: set[str] = set()
             for item in list(agent_state.search_history)[-3:]:
                 query = str(item.get("query", "")).strip()
-                if query:
-                    recent_queries.append(query)
+                normalized_query = self._normalize_recent_query_for_guidance(query)
+                if normalized_query and normalized_query not in seen_recent_queries:
+                    seen_recent_queries.add(normalized_query)
+                    recent_queries.append(normalized_query)
             if recent_queries:
                 guidance_parts.append(
                     "Avoid repeating recent queries: " + "; ".join(recent_queries)
@@ -789,6 +1108,332 @@ class ResearchOrchestrator(OrchestratorAgent):
             if normalized and normalized not in deduped_parts:
                 deduped_parts.append(normalized)
         return " ".join(deduped_parts).strip()
+
+    def _guidance_task_family(self, task: Task, task_state: TaskState) -> str:
+        texts = [
+            str(getattr(task, "description", "") or ""),
+            str(getattr(task, "name", "") or ""),
+        ]
+        if task_state.research_plan and task_state.research_plan.subtasks:
+            if 0 <= task_state.subtask_index < len(task_state.research_plan.subtasks):
+                subtask = task_state.research_plan.subtasks[task_state.subtask_index]
+                texts.extend(
+                    [
+                        str(getattr(subtask, "description", "") or ""),
+                        str(getattr(subtask, "success_criteria", "") or ""),
+                    ]
+                )
+        return infer_research_task_family(*texts)
+
+    @staticmethod
+    def _authoritative_guidance_text(task_family: str, missing_count: int) -> str:
+        if task_family == "papers":
+            return (
+                f"Find at least {missing_count} more authoritative sources such as proceedings pages, "
+                "publisher pages, lab pages, or benchmark repositories."
+            )
+        if task_family == "ecosystem":
+            return (
+                f"Find at least {missing_count} more authoritative sources such as official repositories, "
+                "maintainer documentation, organization pages, or ecosystem indexes."
+            )
+        return (
+            f"Find at least {missing_count} more authoritative sources (.gov, .edu, "
+            "official program pages, or primary organizations)."
+        )
+
+    @staticmethod
+    def _primary_verification_guidance_text(task_family: str) -> str:
+        if task_family == "papers":
+            return "Verify key claims directly on a proceedings page, publisher page, lab page, or primary paper source before advancing."
+        if task_family == "ecosystem":
+            return "Verify key claims directly on a maintainer-controlled repository, documentation page, or primary organization source before advancing."
+        return "Verify key claims directly on an official source before advancing."
+
+    def _sanitize_feedback_for_agent(
+        self,
+        task: Task,
+        task_state: TaskState,
+        feedback: str,
+        *,
+        metrics: dict[str, int],
+        evidence_stats: dict[str, int],
+    ) -> str:
+        text = " ".join((feedback or "").split()).strip()
+        if not text:
+            return ""
+
+        text = re.sub(
+            r"(?i)\buse queries like:\s*.+$",
+            "",
+            text,
+        ).strip(" ;,")
+        text = re.sub(
+            r"(?i)\brun searches including\s+[^.]+\.?",
+            "",
+            text,
+        ).strip(" ;,")
+
+        grounded_text = " ".join(
+            [
+                str(getattr(task, "description", "") or ""),
+                str(getattr(task, "name", "") or ""),
+            ]
+        ).lower()
+        if task_state.research_plan and task_state.research_plan.subtasks:
+            if 0 <= task_state.subtask_index < len(task_state.research_plan.subtasks):
+                subtask = task_state.research_plan.subtasks[task_state.subtask_index]
+                grounded_text += (
+                    " " + str(getattr(subtask, "description", "") or "").lower()
+                )
+                grounded_text += (
+                    " " + str(getattr(subtask, "success_criteria", "") or "").lower()
+                )
+
+        agent_state = self._get_current_subtask_agent_state(task, task_state)
+        if agent_state is not None:
+            for entry in list(getattr(agent_state, "search_history", []) or [])[-6:]:
+                grounded_text += " " + str(entry.get("query", "") or "").lower()
+                for hit in list(entry.get("results", []) or [])[:6]:
+                    grounded_text += " " + str(hit.get("title", "") or "").lower()
+                    grounded_text += " " + str(hit.get("domain", "") or "").lower()
+
+        grounded_tokens = set(re.findall(r"[a-z][a-z0-9]{1,}", grounded_text))
+        low_evidence = (
+            int(metrics.get("search_count", 0) or 0) <= 1
+            and int(evidence_stats.get("authoritative_results", 0) or 0) <= 1
+            and int(evidence_stats.get("official_results", 0) or 0) == 0
+        )
+        profile = build_research_task_profile(grounded_text)
+        allowed_abstract_tokens = (
+            set(RESEARCH_AUDIENCE_TERMS)
+            | set(RESEARCH_SOURCE_CLASS_TERMS)
+            | set(RESEARCH_EVIDENCE_TERMS)
+            | set(profile.topic_terms)
+            | set(profile.target_terms)
+            | set(profile.source_terms)
+            | set(profile.evidence_terms)
+            | set(profile.audience_terms)
+            | {
+                "adjacent",
+                "alongside",
+                "authoritative",
+                "broad",
+                "broaden",
+                "broader",
+                "host",
+                "include",
+                "primary",
+                "related",
+                "verification",
+                "verify",
+            }
+        )
+        drop_markers = (
+            "use queries like",
+            "run searches including",
+            "site:.",
+            "`",
+            '"',
+        )
+        sentence_candidates = re.split(r"(?<=[.!?])\s+", text)
+        kept: list[str] = []
+        for sentence in sentence_candidates:
+            normalized = sentence.strip(" ;,")
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if any(marker in lowered for marker in drop_markers):
+                continue
+            sentence_tokens = set(re.findall(r"[a-z][a-z0-9]{1,}", lowered))
+            expansion_markers = (
+                "broaden",
+                "broader",
+                "adjacent",
+                "alongside",
+                "related to",
+                "include",
+            )
+            if any(marker in lowered for marker in expansion_markers):
+                scope_sentence = re.sub(r"(?i)\bsuch as\b.+$", "", normalized).strip(
+                    " ;,"
+                )
+                scope_sentence = re.sub(
+                    r"(?i)^\s*(?:also|specifically)\s*,\s*", "", scope_sentence
+                ).strip(" ;,")
+                if scope_sentence:
+                    kept.append(scope_sentence)
+                    continue
+            expansion_terms = set()
+            if (
+                any(marker in lowered for marker in expansion_markers)
+                and "such as" not in lowered
+            ):
+                expansion_terms = set(build_research_task_profile(lowered).topic_terms)
+            suspicious_tokens = {
+                token
+                for token in sentence_tokens
+                if len(token) >= 4
+                and token not in grounded_tokens
+                and token not in allowed_abstract_tokens
+                and token not in expansion_terms
+            }
+            if low_evidence and suspicious_tokens:
+                continue
+            if "such as" in lowered and suspicious_tokens:
+                continue
+            if len(suspicious_tokens) >= 3:
+                continue
+            kept.append(normalized)
+
+        sanitized = " ".join(dict.fromkeys(kept)).strip()
+        if sanitized:
+            return sanitized
+
+        planner_failures = int(metrics.get("consecutive_planner_failures", 0) or 0)
+        if planner_failures > 0:
+            return (
+                "Planner instability detected. Pivot to simpler searches centered on official pages, "
+                "primary organizations, and directories directly tied to the current success criteria."
+            )
+        if int(evidence_stats.get("authoritative_results", 0) or 0) <= 1:
+            task_family = self._guidance_task_family(task, task_state)
+            if task_family == "papers":
+                return (
+                    "Broaden the search to adjacent in-scope paper source classes and artifact types. "
+                    "Prioritize proceedings, publishers, lab pages, and benchmark repositories instead of repeating narrow lead-specific queries."
+                )
+            if task_family == "ecosystem":
+                return (
+                    "Broaden the search to adjacent in-scope ecosystem source classes and artifact types. "
+                    "Prioritize repositories, maintainer documentation, organization pages, and ecosystem indexes instead of repeating narrow lead-specific queries."
+                )
+            return (
+                "Broaden the search to adjacent in-scope opportunity types and prioritize official pages, "
+                "primary organizations, and directories instead of repeating narrow lead-specific queries."
+            )
+        return ""
+
+    @staticmethod
+    def _should_suppress_ungrounded_feedback(
+        task: Task,
+        task_state: TaskState,
+        feedback: str,
+        *,
+        metrics: dict[str, int],
+        evidence_stats: dict[str, int],
+    ) -> bool:
+        text = (feedback or "").strip().lower()
+        if not text:
+            return False
+
+        low_evidence = (
+            int(metrics.get("search_count", 0) or 0) <= 1
+            and int(evidence_stats.get("authoritative_results", 0) or 0) == 0
+            and int(evidence_stats.get("official_results", 0) or 0) == 0
+        )
+        if not low_evidence:
+            return False
+
+        prescriptive_markers = (
+            "try the query",
+            "switch to a new query",
+            "execute the following searches",
+            "focus on the query",
+            "specifically,",
+            "search for opportunities on the websites",
+            "site:.",
+            "`",
+            '"',
+        )
+        if not any(marker in text for marker in prescriptive_markers):
+            return False
+
+        grounded_text = " ".join(
+            [
+                str(getattr(task, "description", "") or ""),
+                str(getattr(task, "name", "") or ""),
+            ]
+        ).lower()
+        if task_state.research_plan and task_state.research_plan.subtasks:
+            if 0 <= task_state.subtask_index < len(task_state.research_plan.subtasks):
+                subtask = task_state.research_plan.subtasks[task_state.subtask_index]
+                grounded_text += (
+                    " " + str(getattr(subtask, "description", "") or "").lower()
+                )
+                grounded_text += (
+                    " " + str(getattr(subtask, "success_criteria", "") or "").lower()
+                )
+
+        grounded_tokens = set(re.findall(r"[a-z][a-z0-9]{1,}", grounded_text))
+        feedback_tokens = set(re.findall(r"[a-z][a-z0-9]{1,}", text))
+        novel_tokens = {
+            token
+            for token in feedback_tokens
+            if len(token) >= 3 and token not in grounded_tokens
+        }
+
+        suspicious_tokens = {
+            token
+            for token in novel_tokens
+            if token
+            not in {
+                "query",
+                "search",
+                "official",
+                "program",
+                "programs",
+                "research",
+                "undergraduate",
+                "students",
+                "university",
+                "universities",
+                "organization",
+                "organizations",
+                "authoritative",
+                "source",
+                "sources",
+                "opportunities",
+                "fellowship",
+                "fellowships",
+                "grant",
+                "grants",
+                "scholarship",
+                "scholarships",
+            }
+        }
+        if suspicious_tokens and any(
+            marker in text
+            for marker in (
+                "broaden",
+                "broader",
+                "adjacent",
+                "alongside",
+                "related to",
+                "include",
+            )
+        ):
+            suspicious_tokens = {
+                token
+                for token in suspicious_tokens
+                if token not in set(build_research_task_profile(text).topic_terms)
+            }
+        return bool(suspicious_tokens)
+
+    @staticmethod
+    def _normalize_recent_query_for_guidance(query: str) -> str:
+        """Remove low-signal synthetic suffixes and suppress degenerate query echoes."""
+        normalized = " ".join((query or "").split()).strip()
+        if not normalized:
+            return ""
+        normalized = re.sub(r"(?i)\s+angle\s+\d+\b", "", normalized).strip()
+        normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+        if not normalized:
+            return ""
+        token_count = len(normalized.split())
+        if token_count < 2:
+            return ""
+        return normalized
 
     def _evaluate_subtask_completion_readiness(
         self, task: Task, task_state: TaskState
@@ -817,6 +1462,15 @@ class ResearchOrchestrator(OrchestratorAgent):
         )
         min_fetched_results = max(
             0, int(os.getenv("ORCHESTRATOR_MIN_FETCHED_RESULTS", "1"))
+        )
+        min_pathways = max(
+            1,
+            int(
+                os.getenv(
+                    "ORCHESTRATOR_MIN_DISCOVERY_PATHWAYS_ATTEMPTED",
+                    "2",
+                )
+            ),
         )
 
         evidence_stats = self._get_current_subtask_evidence_stats(task, task_state)
@@ -871,6 +1525,21 @@ class ResearchOrchestrator(OrchestratorAgent):
                     f"distinct_authoritative_titles {evidence_stats['distinct_authoritative_titles']}/{distinct_target}, "
                     f"unique_authoritative_domains {evidence_stats['unique_authoritative_domains']}/{min(3, distinct_target)}"
                 )
+            if metrics["pathway_count"] > 0:
+                required_pathways = min(min_pathways, metrics["pathway_count"])
+                pathway_ok = metrics["pathway_attempted_count"] >= required_pathways
+                breadth_ok = breadth_ok and pathway_ok
+                if not pathway_ok:
+                    pathway_reason = (
+                        f"pathways_attempted {metrics['pathway_attempted_count']}/{required_pathways}, "
+                        f"pathways_productive {metrics['pathway_hit_count']}, "
+                        f"pathways_uncovered {metrics['pathway_uncovered_count']}"
+                    )
+                    breadth_reason = (
+                        f"{breadth_reason}, {pathway_reason}"
+                        if breadth_reason
+                        else pathway_reason
+                    )
 
         if actions_ok and evidence_ok and coverage_ok and authority_ok and breadth_ok:
             return True, "Exploration depth appears sufficient."
@@ -969,6 +1638,42 @@ class ResearchOrchestrator(OrchestratorAgent):
                 return False, reason
 
         return True, "Ceiling progression thresholds satisfied."
+
+    def _hard_subtask_iteration_limit(self) -> int:
+        default_limit = self.max_iterations_per_subtask + max(
+            5,
+            self.max_iterations_per_subtask // 2,
+        )
+        raw_value = os.getenv(
+            "ORCHESTRATOR_HARD_MAX_ITERATIONS_PER_SUBTASK",
+            str(default_limit),
+        )
+        try:
+            configured = int(raw_value)
+        except (TypeError, ValueError):
+            configured = default_limit
+        return max(self.max_iterations_per_subtask + 1, configured)
+
+    def _hard_ceiling_progression_required(
+        self, task: Task, task_state: TaskState
+    ) -> tuple[bool, str]:
+        metrics = self._get_current_subtask_agent_metrics(task, task_state)
+        hard_limit = self._hard_subtask_iteration_limit()
+        action_count = int(metrics.get("action_count", 0) or 0)
+        if action_count < hard_limit:
+            return False, ""
+
+        evidence_stats = self._get_current_subtask_evidence_stats(task, task_state)
+        reason = (
+            "Hard per-subtask iteration limit reached; forcing progression with explicit uncertainty. "
+            f"actions {action_count}/{hard_limit}, "
+            f"search_attempts {metrics['search_attempt_count']}, "
+            f"successful_searches {metrics['search_count']}, "
+            f"unique_queries {metrics['query_count']}, "
+            f"authoritative_results {evidence_stats['authoritative_results']}, "
+            f"official_results {evidence_stats['official_results']}."
+        )
+        return True, reason
 
     def _evaluate_plateau_progression_readiness(
         self, task: Task, task_state: TaskState
@@ -1086,6 +1791,8 @@ class ResearchOrchestrator(OrchestratorAgent):
         distinct_official_titles: set[str] = set()
         for entry in list(getattr(agent_state, "search_history", []) or []):
             for hit in list(entry.get("results", []) or []):
+                if hit.get("task_aligned") is False:
+                    continue
                 domain = str(hit.get("domain", "")).strip().lower()
                 title = self._normalize_hit_title(hit.get("title", ""))
                 if int(hit.get("authority_score", 0) or 0) >= 3:
@@ -1159,10 +1866,19 @@ class ResearchOrchestrator(OrchestratorAgent):
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if match:
                 try:
-                    return max(1, int(match.group(1)))
+                    raw_target = max(1, int(match.group(1)))
+                    break
                 except (TypeError, ValueError):
                     continue
-        return 3
+        else:
+            raw_target = 3
+
+        raw_cap = os.getenv("ORCHESTRATOR_MAX_DISCOVERY_TARGET_COUNT", "6")
+        try:
+            cap = max(3, int(raw_cap))
+        except (TypeError, ValueError):
+            cap = 6
+        return min(raw_target, cap)
 
     def _should_defer_llm_review(
         self, task: Task, task_state: TaskState
@@ -1174,6 +1890,7 @@ class ResearchOrchestrator(OrchestratorAgent):
         current_index = task_state.subtask_index
         metrics = self._get_current_subtask_agent_metrics(task, task_state)
         action_count = metrics["action_count"]
+        search_attempt_count = metrics["search_attempt_count"]
         min_actions_before_review = max(
             1, int(os.getenv("ORCHESTRATOR_MIN_ACTIONS_BEFORE_REVIEW", "4"))
         )
@@ -1192,9 +1909,29 @@ class ResearchOrchestrator(OrchestratorAgent):
         )
         force_review_actions = {"summarize", "complete"}
         stagnation_rounds = task_state.subtask_stagnation_rounds.get(current_index, 0)
+        evidence_stats = self._get_current_subtask_evidence_stats(task, task_state)
+        low_progress_min_attempts = max(
+            2, int(os.getenv("ORCHESTRATOR_LOW_PROGRESS_MIN_SEARCH_ATTEMPTS", "2"))
+        )
 
         # Never defer review when evidence has stagnated; we need orchestration decisions.
         if stagnation_rounds >= 2:
+            return False, ""
+        if int(metrics.get("consecutive_planner_failures", 0) or 0) > 0:
+            return False, ""
+        if (
+            action_count >= 2
+            and search_attempt_count >= low_progress_min_attempts
+            and metrics["search_count"] == 0
+        ):
+            return False, ""
+        if (
+            action_count >= min_actions_before_review
+            and search_attempt_count >= low_progress_min_attempts
+            and evidence_stats["authoritative_results"] == 0
+            and evidence_stats["official_results"] == 0
+            and evidence_stats["fetched_results"] == 0
+        ):
             return False, ""
 
         if (
@@ -1417,7 +2154,7 @@ class ResearchOrchestrator(OrchestratorAgent):
         attempts = max(1, retries + 1)
         last_error: Exception | None = None
         timeout_disabled = (
-            _timeouts_disabled()
+            timeouts_disabled()
             or timeout_seconds is None
             or float(timeout_seconds) <= 0
         )
@@ -1545,6 +2282,26 @@ class ResearchOrchestrator(OrchestratorAgent):
                 next_task="Not Applicable",
             )
 
+        hard_ceiling_hit, hard_ceiling_reason = self._hard_ceiling_progression_required(
+            task,
+            task_state,
+        )
+        if hard_ceiling_hit:
+            logger.warning(
+                "Forcing subtask progression for task %s at hard per-subtask limit",
+                task.name,
+            )
+            return OrchestratorDecision(
+                reasoning=hard_ceiling_reason,
+                decision="switch",
+                feedback=(
+                    "Stop the current subtask now, carry forward only the strongest supported findings, "
+                    "and record unresolved gaps as explicit uncertainty before advancing."
+                ),
+                subtask="proceed",
+                next_task=task.name,
+            )
+
         # Enforce per-subtask iteration ceiling to prevent endless looping.
         subtask_metrics = self._get_current_subtask_agent_metrics(task, task_state)
         subtask_action_count = int(subtask_metrics.get("action_count", 0))
@@ -1649,8 +2406,9 @@ class ResearchOrchestrator(OrchestratorAgent):
 
         if self.control_chains is None:
             return self._fallback_review_decision(
-                task.name,
-                "Control chains unavailable for review; defaulting to continue",
+                task,
+                task_state,
+                "Control chains unavailable for review; using deterministic fallback",
             )
 
         review_timeout_seconds = float(
@@ -1669,8 +2427,9 @@ class ResearchOrchestrator(OrchestratorAgent):
             timeout_seconds=review_timeout_seconds,
             retries=3,
             fallback_factory=lambda err: self._fallback_review_decision(
-                task.name,
-                f"Failed to get valid response from LLM ({err}), defaulting to continue",
+                task,
+                task_state,
+                f"Failed to get valid response from LLM ({err}), using deterministic fallback",
             ),
             async_mode=False,
         )
@@ -1717,6 +2476,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                 Subtask(
                     order=1,
                     description=f"Scope and frame the research problem for {task.name}",
+                    subtask_type="general",
                     success_criteria=(
                         "Define scope, assumptions, and information dimensions needed "
                         "for a strong final report."
@@ -1725,6 +2485,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                 Subtask(
                     order=2,
                     description="Gather high-signal evidence with targeted searches",
+                    subtask_type="discovery",
                     success_criteria=(
                         "Collect source-backed evidence, examples, and factual details "
                         "that directly support the research objective."
@@ -1733,6 +2494,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                 Subtask(
                     order=3,
                     description="Synthesize findings into a structured final report",
+                    subtask_type="synthesis",
                     success_criteria=(
                         "Produce a coherent report with clear conclusions, tradeoffs, "
                         "and actionable recommendations."
@@ -1832,7 +2594,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                 self.config.preplanning_step_timeout_seconds,
             )
         )
-        if _timeouts_disabled() or step_timeout_seconds <= 0:
+        if timeouts_disabled() or step_timeout_seconds <= 0:
             step_timeout_seconds = 0.0
         preplanning_total_timeout_seconds = float(
             os.getenv(
@@ -1840,7 +2602,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                 min(step_timeout_seconds * max_steps, 60.0),
             )
         )
-        if _timeouts_disabled() or preplanning_total_timeout_seconds <= 0:
+        if timeouts_disabled() or preplanning_total_timeout_seconds <= 0:
             preplanning_total_timeout_seconds = 0.0
         mcp_enabled = bool(self.use_mcp and self.mcp_manager is not None)
         preplanning_deadline = (
@@ -2042,7 +2804,11 @@ class ResearchOrchestrator(OrchestratorAgent):
                 len(research_plan.subtasks),
                 max_subtasks,
             )
-            research_plan.subtasks = research_plan.subtasks[:max_subtasks]
+            research_plan = self._truncate_research_plan_preserving_phases(
+                task,
+                research_plan,
+                max_subtasks=max_subtasks,
+            )
 
         for i, subtask in enumerate(research_plan.subtasks):
             subtask.order = i + 1
@@ -2141,7 +2907,7 @@ class ResearchOrchestrator(OrchestratorAgent):
         evidence_appendix = self._build_task_evidence_appendix(task, task_state)
         evidence_brief = self._build_task_evidence_brief(task, task_state)
         verification_brief = self._build_claim_verification_brief(task, task_state)
-        report_sources = list(task_state.all_findings)
+        report_sources = self._collect_clean_subtask_reports(task_state)
         if evidence_brief:
             report_sources.append(evidence_brief)
         if verification_brief:
@@ -2172,9 +2938,10 @@ class ResearchOrchestrator(OrchestratorAgent):
         evidence_appendix = self._build_task_evidence_appendix(task, task_state)
         evidence_brief = self._build_task_evidence_brief(task, task_state)
         verification_brief = self._build_claim_verification_brief(task, task_state)
-        final_report_sources = (
-            list(task_state.all_findings) if task_state.all_findings else [latest_notes]
-        )
+        cleaned_latest_notes = self._strip_control_channel_annotations(latest_notes)
+        final_report_sources = self._collect_clean_subtask_reports(task_state)
+        if not final_report_sources and cleaned_latest_notes:
+            final_report_sources = [cleaned_latest_notes]
         if evidence_brief:
             final_report_sources.append(evidence_brief)
         if verification_brief:
@@ -2222,31 +2989,25 @@ class ResearchOrchestrator(OrchestratorAgent):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Final report synthesis timed out for task %s after %.1fs; using fallback report",
+                "Final report synthesis timed out for task %s after %.1fs; using deterministic report builder",
                 task.name,
                 timeout_seconds,
             )
-            return self._fallback_final_report(task, report_sources, "timeout")
+            return self._fallback_final_report(task, "timeout")
         except Exception as e:
             logger.warning(
-                "Final report synthesis failed for task %s: %s; using fallback report",
+                "Final report synthesis failed for task %s: %s; using deterministic report builder",
                 task.name,
                 e,
             )
-            return self._fallback_final_report(task, report_sources, str(e))
+            return self._fallback_final_report(task, str(e))
 
-    @staticmethod
-    def _fallback_final_report(
-        task: Task, report_sources: list[str], reason: str
-    ) -> str:
+    def _fallback_final_report(self, task: Task, reason: str) -> str:
         """Deterministic fallback when LLM synthesis is unavailable."""
-        non_empty = [str(s).strip() for s in report_sources if str(s).strip()]
-        condensed = "\n\n".join(non_empty[:4]) if non_empty else "No findings captured."
-        return (
-            f"# Final Research Report (Fallback)\n\n"
-            f"Task: {task.name}\n\n"
-            f"Reason fallback used: {reason}\n\n"
-            f"## Consolidated Findings\n\n{condensed}\n"
+        return self._build_deterministic_final_report(
+            task,
+            self.task_states[task.name],
+            reason=reason,
         )
 
     async def _apply_review_decision(
@@ -2283,7 +3044,11 @@ class ResearchOrchestrator(OrchestratorAgent):
                 task,
                 task_state,
             )
-            if not readiness_ok and not plateau_ok:
+            (
+                hard_ceiling_hit,
+                hard_ceiling_reason,
+            ) = self._hard_ceiling_progression_required(task, task_state)
+            if not readiness_ok and not plateau_ok and not hard_ceiling_hit:
                 guidance = self._build_guidance_from_decision(
                     task,
                     task_state,
@@ -2291,7 +3056,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                     readiness_reason=readiness_reason,
                 )
                 self._set_subtask_guidance(
-                    task_state, task_state.subtask_index, guidance
+                    task, task_state, task_state.subtask_index, guidance
                 )
                 logger.info(
                     "Blocking orchestrator advance for task %s: %s",
@@ -2310,12 +3075,18 @@ class ResearchOrchestrator(OrchestratorAgent):
                     "and carry unresolved breadth gaps forward as explicit uncertainty."
                 )
                 self._set_subtask_guidance(
-                    task_state, task_state.subtask_index, plateau_guidance
+                    task, task_state, task_state.subtask_index, plateau_guidance
                 )
                 logger.info(
                     "Allowing orchestrator advance for task %s via plateau readiness: %s",
                     task.name,
                     plateau_reason,
+                )
+            elif hard_ceiling_hit and not readiness_ok and not plateau_ok:
+                logger.info(
+                    "Allowing orchestrator advance for task %s via hard ceiling: %s",
+                    task.name,
+                    hard_ceiling_reason,
                 )
 
         if decision.decision == "done":
@@ -2380,6 +3151,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                         f"{next_subtask.success_criteria}"
                     )
                 self._set_subtask_guidance(
+                    task,
                     task_state,
                     task_state.subtask_index,
                     next_guidance,
@@ -2403,7 +3175,7 @@ class ResearchOrchestrator(OrchestratorAgent):
                 return await self._finalize_task(task, latest_notes)
 
         guidance = self._build_guidance_from_decision(task, task_state, decision)
-        self._set_subtask_guidance(task_state, task_state.subtask_index, guidance)
+        self._set_subtask_guidance(task, task_state, task_state.subtask_index, guidance)
         if guidance:
             return (latest_notes + f"\n\n[ORCHESTRATOR FEEDBACK] {guidance}").strip()
         return latest_notes or "Continuing research"
@@ -2425,9 +3197,10 @@ class ResearchOrchestrator(OrchestratorAgent):
         lines = [
             f"Subtask {subtask_index + 1}: {subtask_desc or 'N/A'}",
         ]
-        if latest_notes.strip():
+        cleaned_latest_notes = self._strip_control_channel_annotations(latest_notes)
+        if cleaned_latest_notes.strip():
             lines.append("Latest Notes:")
-            lines.append(latest_notes.strip())
+            lines.append(cleaned_latest_notes.strip())
 
         agent = task_state.subtask_agents.get(subtask_index)
         if agent is None:
@@ -2453,6 +3226,15 @@ class ResearchOrchestrator(OrchestratorAgent):
                         domain = str(hit.get("domain", "")).strip()
                         tier = str(hit.get("source_tier", "")).strip()
                         authority_score = int(hit.get("authority_score", 0) or 0)
+                        summary = self._normalize_evidence_excerpt(
+                            str(hit.get("summary", "")).strip(),
+                            limit=220,
+                        )
+                        excerpt = self._normalize_evidence_excerpt(
+                            str(hit.get("content_excerpt", "")).strip()
+                            or str(hit.get("snippet", "")).strip(),
+                            limit=260,
+                        )
                         if url:
                             lines.append(
                                 f"  - {title} | {url} | domain={domain or 'unknown'} "
@@ -2460,6 +3242,10 @@ class ResearchOrchestrator(OrchestratorAgent):
                             )
                         else:
                             lines.append(f"  - {title}")
+                        if summary:
+                            lines.append(f"    Summary: {summary}")
+                        if excerpt:
+                            lines.append(f"    Evidence excerpt: {excerpt}")
             checkpoints = list(getattr(agent_state, "checkpoints", []) or [])
             if checkpoints:
                 lines.append("")
@@ -2487,19 +3273,19 @@ class ResearchOrchestrator(OrchestratorAgent):
 
     @staticmethod
     def _extract_domains_from_text(text: str) -> list[str]:
-        domains: list[str] = []
-        for raw in re.findall(r"https?://[^\s)]+", text or ""):
-            host = (urlparse(raw).netloc or "").lower().strip()
-            if host.startswith("www."):
-                host = host[4:]
-            if host:
-                domains.append(host)
-        return domains
+        return extract_domains_from_text(text)
 
-    def _subtask_is_low_signal(self, subtask: Subtask) -> bool:
+    def _subtask_is_low_signal(self, task: Task, subtask: Subtask) -> bool:
         haystack = f"{subtask.description}\n{subtask.success_criteria}".lower()
-        domains = self._extract_domains_from_text(haystack)
-        if any(domain.endswith(LOW_SIGNAL_PLAN_DOMAINS) for domain in domains):
+        if subtask_looks_low_signal(
+            haystack,
+            task_text=" ".join(
+                [
+                    str(getattr(task, "name", "") or ""),
+                    str(getattr(task, "description", "") or ""),
+                ]
+            ),
+        ):
             return True
         return any(
             token in haystack
@@ -2551,8 +3337,9 @@ class ResearchOrchestrator(OrchestratorAgent):
     def _replacement_subtask_for_overanchored_lead(order: int) -> Subtask:
         return Subtask(
             order=order,
+            subtask_type="discovery",
             description=(
-                "Identify distinct NSF, university, and nonprofit program opportunities relevant to the task from official sources."
+                "Identify distinct government, university, and nonprofit program opportunities relevant to the task from official sources."
             ),
             success_criteria=(
                 "List multiple distinct opportunities supported by official program pages, .gov, .edu, or primary organization sources, with enough source diversity to support deeper verification."
@@ -2589,48 +3376,357 @@ class ResearchOrchestrator(OrchestratorAgent):
         return False
 
     @staticmethod
+    def _subtask_is_opportunity_task_misaligned(task: Task, subtask: Subtask) -> bool:
+        if not task_targets_discrete_opportunities(task):
+            return False
+        text = " ".join(
+            [
+                str(getattr(subtask, "description", "") or ""),
+                str(getattr(subtask, "success_criteria", "") or ""),
+            ]
+        )
+        profile = build_research_task_profile(
+            text,
+            getattr(task, "description", "") or "",
+            getattr(task, "name", "") or "",
+        )
+        if (
+            profile.source_terms
+            and not profile.target_terms
+            and not profile.evidence_terms
+        ):
+            return True
+        if (
+            "organization" in profile.source_terms
+            and not profile.target_terms
+            and not {"status", "deadline", "application", "eligibility"}.intersection(
+                profile.evidence_terms
+            )
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _replacement_subtask_for_opportunity_task(order: int) -> Subtask:
+        return Subtask(
+            order=order,
+            subtask_type="discovery",
+            description=(
+                "Identify currently relevant candidate opportunities from primary or authoritative sources."
+            ),
+            success_criteria=(
+                "List multiple distinct candidate opportunities from official program pages, primary organization sites, or authoritative directories with enough detail to support later verification."
+            ),
+        )
+
+    @staticmethod
     def _replacement_subtask_for_out_of_scope_artifacts(order: int) -> Subtask:
         return Subtask(
             order=order,
+            subtask_type="verification",
             description=(
-                "Verify candidate opportunities and program requirements directly from official NSF and university program sources."
+                "Verify candidate opportunities on primary or authoritative program pages instead of tangential artifacts."
             ),
             success_criteria=(
-                "Confirm which opportunities are real, current, and relevant by checking official program pages for deadlines, eligibility, and research focus."
+                "Confirm current status, timing, requirements, and source fidelity while discarding announcement-only, abstract-only, or indirect references."
             ),
         )
+
+    @staticmethod
+    def _default_discovery_subtask(task: Task, order: int) -> Subtask:
+        if task_targets_discrete_opportunities(task):
+            return Subtask(
+                order=order,
+                subtask_type="discovery",
+                description=(
+                    "Identify the strongest candidate opportunities from primary or authoritative sources."
+                ),
+                success_criteria=(
+                    "List multiple distinct candidate opportunities from official program pages, primary organization sites, or authoritative directories, including enough detail to support verification."
+                ),
+            )
+        return Subtask(
+            order=order,
+            subtask_type="discovery",
+            description="Discover the strongest source-backed leads that directly address the research task.",
+            success_criteria=(
+                "Collect concrete findings, named entities, and primary or authoritative sources that establish strong coverage of the task."
+            ),
+        )
+
+    @staticmethod
+    def _default_verification_subtask(task: Task, order: int) -> Subtask:
+        if task_targets_discrete_opportunities(task):
+            return Subtask(
+                order=order,
+                subtask_type="verification",
+                description=(
+                    "Verify the current status, requirements, timing, and application details of the strongest candidate opportunities on primary or authoritative pages."
+                ),
+                success_criteria=(
+                    "Confirm current status, requirements, timing, and application method for the strongest candidate opportunities using primary or authoritative pages."
+                ),
+            )
+        return Subtask(
+            order=order,
+            subtask_type="verification",
+            description="Verify the strongest findings directly against primary or authoritative sources.",
+            success_criteria=(
+                "Confirm the highest-value claims, dates, requirements, and source details on primary or authoritative pages."
+            ),
+        )
+
+    @staticmethod
+    def _default_comparison_subtask(task: Task, order: int) -> Subtask:
+        if task_targets_discrete_opportunities(task):
+            return Subtask(
+                order=order,
+                subtask_type="comparison",
+                description=(
+                    "Compare the verified opportunities to identify the strongest options, tradeoffs, and remaining evidence gaps."
+                ),
+                success_criteria=(
+                    "Produce a structured comparison of the strongest verified opportunities, including which details are confirmed and which still require checking."
+                ),
+            )
+        return Subtask(
+            order=order,
+            subtask_type="comparison",
+            description="Compare the strongest verified findings and highlight the most important tradeoffs.",
+            success_criteria=(
+                "Produce a source-backed comparison that distinguishes stronger and weaker options or explanations."
+            ),
+        )
+
+    @staticmethod
+    def _default_synthesis_subtask(task: Task, order: int) -> Subtask:
+        return Subtask(
+            order=order,
+            subtask_type="synthesis",
+            description="Synthesize the verified findings into a final report for the user.",
+            success_criteria=(
+                "Produce a structured final report that clearly separates supported findings, tentative findings, and open uncertainties."
+            ),
+        )
+
+    @staticmethod
+    def _explicit_subtask_phase(description: str) -> str | None:
+        match = re.match(
+            r"^\s*(discovery|verification|authoritative verification|comparison|compare|synthesis)\s*:",
+            str(description or ""),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        label = match.group(1).lower()
+        if label in {"authoritative verification", "verification"}:
+            return "verification"
+        if label in {"comparison", "compare"}:
+            return "comparison"
+        return label
+
+    def _infer_subtask_type(
+        self,
+        description: str,
+        success_criteria: str,
+    ) -> str:
+        explicit = self._explicit_subtask_phase(description)
+        if explicit:
+            return explicit
+
+        description_text = str(description or "").lower()
+        text = " ".join(
+            [
+                str(description or ""),
+                str(success_criteria or ""),
+            ]
+        ).lower()
+        if any(
+            token in text
+            for token in (
+                "synthes",
+                "final report",
+                "final deliverable",
+                "final output",
+            )
+        ):
+            return "synthesis"
+        if any(
+            token in description_text
+            for token in (
+                "discover",
+                "identify",
+                "list",
+                "gather",
+                "collect",
+                "broad set",
+                "candidate opportunities",
+                "distinct opportunities",
+            )
+        ):
+            return "discovery"
+        if any(
+            token in text
+            for token in ("compare", "comparison", "rank", "shortlist", "tradeoff")
+        ):
+            return "comparison"
+        if any(
+            token in text
+            for token in (
+                "verify",
+                "verification",
+                "cross-check",
+                "cross check",
+                "current status",
+                "official page",
+                "official pages",
+                "authoritative source",
+                "authoritative sources",
+            )
+        ):
+            return "verification"
+        if any(
+            token in text
+            for token in (
+                "discover",
+                "identify",
+                "list",
+                "gather",
+                "collect",
+                "broad set",
+                "candidate opportunities",
+                "official sources",
+                "authoritative sources",
+            )
+        ):
+            return "discovery"
+        return "general"
+
+    def _task_aware_default_subtask(
+        self, task: Task, phase: str, order: int
+    ) -> Subtask:
+        phase = str(phase or "general").lower()
+        if phase == "discovery":
+            return self._default_discovery_subtask(task, order)
+        if phase == "verification":
+            return self._default_verification_subtask(task, order)
+        if phase == "comparison":
+            return self._default_comparison_subtask(task, order)
+        if phase == "synthesis":
+            return self._default_synthesis_subtask(task, order)
+        return self._default_discovery_subtask(task, order)
+
+    @staticmethod
+    def _phase_value(value: object) -> str:
+        if hasattr(value, "value"):
+            return str(getattr(value, "value")).lower()
+        return str(value or "").lower()
+
+    def _canonicalize_opportunity_plan(
+        self,
+        task: Task,
+        subtasks: list[Subtask],
+    ) -> list[Subtask]:
+        phase_defaults = {
+            "discovery": self._default_discovery_subtask(task, 1),
+            "verification": self._default_verification_subtask(task, 2),
+            "comparison": self._default_comparison_subtask(task, 3),
+            "synthesis": self._default_synthesis_subtask(task, 4),
+        }
+        selected: dict[str, Subtask] = {}
+        for phase in ("discovery", "verification", "comparison", "synthesis"):
+            for subtask in subtasks:
+                if self._phase_value(subtask.subtask_type) == phase:
+                    selected[phase] = subtask
+                    break
+        # For opportunity tasks, standardized four-phase control is more reliable
+        # than preserving extra discovery subtasks that usually degenerate into
+        # directories, organization maps, or lexical query churn.
+        ordered = [
+            phase_defaults["discovery"],
+            selected.get("verification", phase_defaults["verification"]),
+            selected.get("comparison", phase_defaults["comparison"]),
+            selected.get("synthesis", phase_defaults["synthesis"]),
+        ]
+        for idx, (subtask, phase) in enumerate(
+            zip(ordered, ("discovery", "verification", "comparison", "synthesis")),
+            start=1,
+        ):
+            subtask.order = idx
+            subtask.subtask_type = phase
+        return ordered
+
+    def _truncate_research_plan_preserving_phases(
+        self,
+        task: Task,
+        research_plan: PlanningPlan,
+        *,
+        max_subtasks: int,
+    ) -> PlanningPlan:
+        subtasks = list(research_plan.subtasks or [])
+        if len(subtasks) <= max_subtasks:
+            return research_plan
+
+        selected: list[Subtask] = []
+        phase_order = ("discovery", "verification", "comparison", "synthesis")
+        for phase in phase_order:
+            for subtask in subtasks:
+                if self._phase_value(subtask.subtask_type) == phase:
+                    selected.append(subtask)
+                    break
+            if len(selected) >= max_subtasks:
+                break
+
+        if len(selected) < max_subtasks:
+            for subtask in subtasks:
+                if subtask not in selected:
+                    selected.append(subtask)
+                if len(selected) >= max_subtasks:
+                    break
+
+        selected.sort(key=lambda item: item.order)
+        if selected:
+            if self._phase_value(selected[0].subtask_type) != "discovery":
+                selected[0] = self._default_discovery_subtask(task, 1)
+            if self._phase_value(selected[-1].subtask_type) != "synthesis":
+                if len(selected) == max_subtasks:
+                    selected[-1] = self._default_synthesis_subtask(task, max_subtasks)
+                else:
+                    selected.append(
+                        self._default_synthesis_subtask(task, len(selected) + 1)
+                    )
+        selected = selected[:max_subtasks]
+        for idx, subtask in enumerate(selected, start=1):
+            subtask.order = idx
+        research_plan.subtasks = selected
+        return research_plan
 
     def _normalize_research_plan(
         self, task: Task, research_plan: PlanningPlan
     ) -> PlanningPlan:
-        """Harden planning output against low-signal or overly lead-specific subtasks."""
+        """Harden planning output against low-signal, over-anchored, and misaligned subtasks."""
         normalized_subtasks: list[Subtask] = []
         seen_descriptions: set[str] = set()
 
-        for subtask in research_plan.subtasks:
-            description = " ".join(subtask.description.split()).strip()
-            success_criteria = " ".join(subtask.success_criteria.split()).strip()
+        for subtask in list(research_plan.subtasks or []):
+            description = " ".join(str(subtask.description or "").split()).strip()
+            success_criteria = " ".join(
+                str(subtask.success_criteria or "").split()
+            ).strip()
             candidate = Subtask(
                 order=subtask.order,
                 description=description,
                 success_criteria=success_criteria,
+                subtask_type=self._infer_subtask_type(description, success_criteria),
             )
 
-            if self._subtask_is_low_signal(candidate):
+            if self._subtask_is_low_signal(task, candidate):
                 logger.warning(
                     "Replacing low-signal planning subtask for task %s: %s",
                     task.name,
                     description[:180],
                 )
-                candidate = Subtask(
-                    order=subtask.order,
-                    description=(
-                        "Validate promising leads against authoritative sources and discard low-signal or non-official pages."
-                    ),
-                    success_criteria=(
-                        "Confirm which opportunities are supported by official program, .gov, .edu, or primary organization pages and remove weak leads."
-                    ),
-                )
+                candidate = self._default_verification_subtask(task, subtask.order)
             elif self._subtask_is_overanchored_lead(candidate):
                 logger.warning(
                     "Replacing over-anchored planning subtask for task %s: %s",
@@ -2649,7 +3745,19 @@ class ResearchOrchestrator(OrchestratorAgent):
                 candidate = self._replacement_subtask_for_out_of_scope_artifacts(
                     subtask.order
                 )
+            elif self._subtask_is_opportunity_task_misaligned(task, candidate):
+                logger.warning(
+                    "Replacing opportunity-misaligned planning subtask for task %s: %s",
+                    task.name,
+                    description[:180],
+                )
+                candidate = self._replacement_subtask_for_opportunity_task(
+                    subtask.order
+                )
 
+            candidate.subtask_type = self._infer_subtask_type(
+                candidate.description, candidate.success_criteria
+            )
             normalized_key = candidate.description.lower()
             if normalized_key in seen_descriptions:
                 continue
@@ -2661,131 +3769,142 @@ class ResearchOrchestrator(OrchestratorAgent):
                 task, "plan normalization removed all subtasks"
             )
 
-        has_validation_step = any(
-            any(
-                token in subtask.description.lower()
-                for token in ("verify", "validation", "authoritative", "official")
+        if task_targets_discrete_opportunities(task):
+            research_plan.subtasks = self._canonicalize_opportunity_plan(
+                task,
+                normalized_subtasks,
             )
-            for subtask in normalized_subtasks
+            return research_plan
+
+        phase_map: dict[str, Subtask] = {}
+        for subtask in normalized_subtasks:
+            phase = self._phase_value(subtask.subtask_type)
+            if phase in {"discovery", "verification", "comparison", "synthesis"}:
+                phase_map.setdefault(phase, subtask)
+
+        ordered: list[Subtask] = []
+        ordered.append(
+            phase_map.get("discovery") or self._default_discovery_subtask(task, 1)
         )
-        if not has_validation_step:
-            normalized_subtasks.insert(
-                min(1, len(normalized_subtasks)),
-                Subtask(
-                    order=2,
-                    description=(
-                        "Verify the strongest opportunities against authoritative sources before drawing conclusions."
-                    ),
-                    success_criteria=(
-                        "Cross-check deadlines, eligibility, and application details on official program, .gov, .edu, or primary organization pages."
-                    ),
-                ),
+        ordered.append(
+            phase_map.get("verification") or self._default_verification_subtask(task, 2)
+        )
+        if len(normalized_subtasks) >= 2 or "comparison" in phase_map:
+            ordered.append(
+                phase_map.get("comparison") or self._default_comparison_subtask(task, 3)
             )
+        ordered.append(
+            phase_map.get("synthesis")
+            or self._default_synthesis_subtask(task, len(ordered) + 1)
+        )
 
-        for idx, subtask in enumerate(normalized_subtasks, start=1):
+        deduped: list[Subtask] = []
+        seen_phase_desc: set[str] = set()
+        for idx, subtask in enumerate(ordered, start=1):
+            key = f"{subtask.subtask_type}:{subtask.description.lower()}"
+            if key in seen_phase_desc:
+                continue
+            seen_phase_desc.add(key)
             subtask.order = idx
+            subtask.subtask_type = self._infer_subtask_type(
+                subtask.description, subtask.success_criteria
+            )
+            deduped.append(subtask)
 
-        research_plan.subtasks = normalized_subtasks
+        research_plan.subtasks = deduped
         return research_plan
 
     def _build_task_evidence_appendix(self, task: Task, task_state: TaskState) -> str:
-        """Aggregate unique URLs and key query evidence across subtasks."""
         urls: list[str] = []
-        seen_urls: set[str] = set()
-        query_lines: list[str] = []
         authoritative_links: list[str] = []
+        query_lines: list[str] = []
+        seen_urls: set[str] = set()
         for idx, agent in sorted(task_state.subtask_agents.items()):
-            try:
-                agent_state = getattr(agent, "_state", {}).get(task.name)
-                if agent_state is None:
-                    continue
-                for entry in list(getattr(agent_state, "search_history", []) or []):
-                    query = str(entry.get("query", "")).strip()
-                    results_count = int(entry.get("results_count", 0))
-                    if query:
-                        query_lines.append(
-                            f"- Subtask {idx + 1}: {query} (results={results_count})"
-                        )
-                    for hit in list(entry.get("results", []) or []):
-                        url = str(hit.get("url", "")).strip()
-                        if not url or url in seen_urls:
-                            continue
-                        seen_urls.add(url)
-                        urls.append(url)
-                        if int(hit.get("authority_score", 0) or 0) >= 3:
-                            domain = str(hit.get("domain", "")).strip() or "unknown"
-                            authoritative_links.append(
-                                f"- Subtask {idx + 1}: {domain} | {url}"
-                            )
-            except Exception:
+            agent_state = getattr(agent, "_state", {}).get(task.name)
+            if agent_state is None:
                 continue
-
+            for entry in list(getattr(agent_state, "search_history", []) or []):
+                query = str(entry.get("query", "")).strip()
+                results = list(entry.get("results", []) or [])
+                if query:
+                    query_lines.append(
+                        f"- Subtask {idx + 1}: {query} (results={int(entry.get('results_count', len(results)) or 0)})"
+                    )
+                for hit in results:
+                    url = clean_url(str(hit.get("url", "")).strip() or "")
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    urls.append(url)
+                    if int(hit.get("authority_score", 0) or 0) >= 3:
+                        authoritative_links.append(
+                            f"- Subtask {idx + 1}: {str(hit.get('domain', '')).strip() or 'unknown'} | {url}"
+                        )
         if not urls and not query_lines:
             return ""
-
         lines = ["## Evidence Appendix"]
         if query_lines:
-            lines.append("")
-            lines.append("### Queries Attempted")
-            lines.extend(query_lines[:24])
-        if urls:
-            lines.append("")
-            lines.append("### Source Links")
-            for url in urls[:30]:
-                lines.append(f"- {url}")
+            lines.extend(["", "### Queries Attempted", *query_lines[:24]])
         if authoritative_links:
-            lines.append("")
-            lines.append("### Highest-Trust Sources")
-            lines.extend(authoritative_links[:20])
+            lines.extend(["", "### Highest-Trust Sources", *authoritative_links[:20]])
+        if urls:
+            lines.extend(["", "### Source Links"])
+            lines.extend(f"- {url}" for url in urls[:30])
         return "\n".join(lines)
 
     def _build_task_evidence_brief(self, task: Task, task_state: TaskState) -> str:
-        """Create a compact evidence-quality brief for final synthesis."""
         lines = ["## Evidence Quality Brief"]
         for idx, agent in sorted(task_state.subtask_agents.items()):
-            try:
-                agent_state = getattr(agent, "_state", {}).get(task.name)
-                if agent_state is None:
-                    continue
-                authoritative = 0
-                official = 0
-                domains: set[str] = set()
-                top_hits: list[str] = []
-                for entry in list(getattr(agent_state, "search_history", []) or []):
-                    for hit in list(entry.get("results", []) or []):
-                        domain = str(hit.get("domain", "")).strip().lower()
-                        if domain:
-                            domains.add(domain)
-                        if int(hit.get("authority_score", 0) or 0) >= 3:
-                            authoritative += 1
-                            if len(top_hits) < 3:
-                                top_hits.append(
-                                    f"{str(hit.get('title', '')).strip() or 'Untitled'} | {domain or 'unknown'}"
-                                )
-                        if bool(hit.get("official_source", False)):
-                            official += 1
-                lines.append(
-                    f"- Subtask {idx + 1}: authoritative_results={authoritative}, "
-                    f"official_results={official}, unique_domains={len(domains)}"
-                )
-                for hit in top_hits:
-                    lines.append(f"  - {hit}")
-            except Exception:
+            agent_state = getattr(agent, "_state", {}).get(task.name)
+            if agent_state is None:
                 continue
+            authoritative = 0
+            official = 0
+            domains: set[str] = set()
+            top_hits: list[str] = []
+            for entry in list(getattr(agent_state, "search_history", []) or []):
+                for hit in list(entry.get("results", []) or []):
+                    if hit.get("task_aligned") is False:
+                        continue
+                    domain = str(hit.get("domain", "")).strip().lower()
+                    if domain:
+                        domains.add(domain)
+                    if int(hit.get("authority_score", 0) or 0) >= 3:
+                        authoritative += 1
+                        if len(top_hits) < 3:
+                            top_hits.append(
+                                f"{str(hit.get('title', '')).strip() or 'Untitled'} | {domain or 'unknown'}"
+                            )
+                    if bool(hit.get("official_source", False)):
+                        official += 1
+            lines.append(
+                f"- Subtask {idx + 1}: authoritative_results={authoritative}, official_results={official}, unique_domains={len(domains)}"
+            )
+            for hit in top_hits:
+                lines.append(f"  - {hit}")
         return "\n".join(lines)
 
     @staticmethod
     def _tokenize_claim_text(text: str) -> set[str]:
         return {
             token
-            for token in re.findall(r"[a-z0-9]{3,}", (text or "").lower())
+            for token in re.findall(r"[a-z0-9]{3,}", str(text or "").lower())
             if token not in CLAIM_STOPWORDS
         }
+
+    def _normalize_evidence_excerpt(self, text: str, *, limit: int = 240) -> str:
+        cleaned = self._strip_control_channel_annotations(text or "")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:;,")
+        if len(cleaned) <= limit:
+            return cleaned
+        truncated = cleaned[:limit].rsplit(" ", 1)[0].strip()
+        return (truncated or cleaned[:limit]).rstrip(" ,;:.") + "..."
 
     def _extract_claim_candidates(self, text: str) -> list[str]:
         claims: list[str] = []
         seen: set[str] = set()
-        for raw_line in (text or "").splitlines():
+        cleaned_text = self._strip_control_channel_annotations(text or "")
+        for raw_line in cleaned_text.splitlines():
             line = raw_line.strip().lstrip("-* ").strip()
             if not line:
                 continue
@@ -2801,11 +3920,8 @@ class ResearchOrchestrator(OrchestratorAgent):
                 )
             ):
                 continue
-            if len(line) < 40:
-                continue
             for chunk in re.split(r"(?<=[.!?])\s+", line):
-                candidate = " ".join(chunk.split()).strip()
-                candidate = self._sanitize_claim_candidate(candidate)
+                candidate = self._sanitize_claim_candidate(chunk)
                 if candidate is None:
                     continue
                 normalized = candidate.lower()
@@ -2820,9 +3936,11 @@ class ResearchOrchestrator(OrchestratorAgent):
         cleaned = str(candidate or "").strip()
         if not cleaned:
             return None
-
         cleaned = re.sub(
-            r"^\[(?:SUMMARY|SEARCH|THOUGHT|CHECKPOINT|COMPLETE)\]\s*", "", cleaned
+            r"^\[(?:SUMMARY|SEARCH|THOUGHT|CHECKPOINT|COMPLETE|ORCHESTRATOR FEEDBACK)\]\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
         )
         cleaned = re.sub(r"^(?:Query|query)\s*:\s*", "", cleaned)
         cleaned = re.sub(r"\s*\[(?:primary|partial)\s+support:.*?\]\s*$", "", cleaned)
@@ -2830,23 +3948,20 @@ class ResearchOrchestrator(OrchestratorAgent):
         cleaned = re.sub(r"[*_`#]+", " ", cleaned)
         cleaned = re.sub(r"^\d+\.\s*", "", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:;,.")
-
         lowered = cleaned.lower()
-        if len(cleaned) < 40 or len(cleaned) > 240:
+        if len(cleaned) < 40 or len(cleaned) > 280:
             return None
         if any(
             phrase in lowered
             for phrase in (
                 "executive summary",
                 "final report",
-                "this report identifies",
-                "confirmed as of",
                 "report generated at",
-                "critical to verify",
-                "contact information is not consistently",
-                "precise eligibility requirements",
-                "ongoing changes",
-                "funding details are not provided",
+                "success-criteria-aligned queries",
+                "avoid repeating recent queries",
+                "run at least",
+                "increase search diversity",
+                "find at least",
             )
         ):
             return None
@@ -2862,20 +3977,6 @@ class ResearchOrchestrator(OrchestratorAgent):
             )
         ):
             return None
-        if any(
-            token in lowered
-            for token in (
-                "tentative",
-                "uncertain",
-                "likely ",
-                "typically ",
-                "not explicitly",
-                "must verify",
-                "check each program",
-                "dynamic nature",
-            )
-        ):
-            return None
         if "|" in cleaned:
             return None
         if not any(hint in f" {lowered} " for hint in CLAIM_RELATION_HINTS):
@@ -2884,161 +3985,247 @@ class ResearchOrchestrator(OrchestratorAgent):
             return None
         return cleaned
 
-    @staticmethod
+    def _authoritative_evidence_records(
+        self, task: Task, task_state: TaskState
+    ) -> list[SourceEvidenceRecord]:
+        records: list[SourceEvidenceRecord] = []
+        for idx, agent in sorted(task_state.subtask_agents.items()):
+            agent_state = getattr(agent, "_state", {}).get(task.name)
+            if agent_state is None:
+                continue
+            for entry in list(getattr(agent_state, "search_history", []) or []):
+                query = str(entry.get("query", "")).strip()
+                for hit in list(entry.get("results", []) or []):
+                    if hit.get("task_aligned") is False:
+                        continue
+                    authority_score = int(hit.get("authority_score", 0) or 0)
+                    if authority_score < 3:
+                        continue
+                    title = str(hit.get("title", "")).strip()
+                    domain = str(hit.get("domain", "")).strip().lower()
+                    url = clean_url(str(hit.get("url", "")).strip() or "") or ""
+                    summary = self._normalize_evidence_excerpt(
+                        str(hit.get("summary", "")).strip(),
+                        limit=220,
+                    )
+                    excerpt = self._normalize_evidence_excerpt(
+                        str(hit.get("content_excerpt", "")).strip()
+                        or str(hit.get("snippet", "")).strip(),
+                        limit=320,
+                    )
+                    records.append(
+                        SourceEvidenceRecord(
+                            subtask=idx + 1,
+                            title=title,
+                            domain=domain,
+                            url=url,
+                            official=bool(hit.get("official_source", False)),
+                            authority_score=authority_score,
+                            source_tier=str(hit.get("source_tier", "")).strip(),
+                            fetched=bool(hit.get("fetched", False)),
+                            query=query,
+                            summary=summary,
+                            content_excerpt=excerpt,
+                            snippet=self._normalize_evidence_excerpt(
+                                str(hit.get("snippet", "")).strip(), limit=220
+                            ),
+                            tokens=self._tokenize_claim_text(
+                                " ".join(
+                                    part
+                                    for part in (title, domain, query, summary, excerpt)
+                                    if part
+                                )
+                            ),
+                            title_tokens=self._tokenize_claim_text(title),
+                            domain_tokens=self._tokenize_claim_text(domain),
+                            query_tokens=self._tokenize_claim_text(query),
+                            evidence_tokens=self._tokenize_claim_text(
+                                " ".join(part for part in (summary, excerpt) if part)
+                            ),
+                        )
+                    )
+        return records
+
     def _build_primary_record_claims(
-        authoritative_records: list[dict[str, Any]],
+        self,
+        authoritative_records: list[SourceEvidenceRecord],
     ) -> list[str]:
         claims: list[str] = []
         seen: set[tuple[str, str]] = set()
         for record in authoritative_records:
-            if not bool(record.get("official", False)):
+            if not record.official:
                 continue
-            title = str(record.get("title", "")).strip()
-            domain = str(record.get("domain", "")).strip().lower()
-            if not title or not domain:
-                continue
-            key = (title.lower(), domain)
-            if key in seen:
+            key = (record.title.lower(), record.domain)
+            if not record.title or not record.domain or key in seen:
                 continue
             seen.add(key)
-            claims.append(
-                f"- {title} is an official source relevant to this task. [primary support: {domain}]"
-            )
-            if len(claims) >= 5:
+            excerpt = record.content_excerpt or record.summary or record.snippet
+            if excerpt:
+                claims.append(
+                    f"- {record.title}: {excerpt} [primary support: {record.domain}]"
+                )
+            else:
+                claims.append(
+                    f"- {record.title} is an official source relevant to this task. [primary support: {record.domain}]"
+                )
+            if len(claims) >= 6:
                 break
         return claims
+
+    @staticmethod
+    def _claim_is_specific(candidate: str) -> bool:
+        text = str(candidate or "")
+        lowered = text.lower()
+        if any(
+            token in lowered
+            for token in (
+                "deadline",
+                "eligibility",
+                "application",
+                "applications",
+                "current status",
+                "currently open",
+                "open to",
+                "closed",
+                "rolling applications",
+            )
+        ):
+            return True
+        return False
+
+    def _match_claim_to_record(
+        self,
+        claim: str,
+        records: list[SourceEvidenceRecord],
+    ) -> SourceEvidenceRecord | None:
+        claim_tokens = self._tokenize_claim_text(claim)
+        if not claim_tokens:
+            return None
+        scored: list[tuple[int, int, int, SourceEvidenceRecord]] = []
+        for record in records:
+            title_overlap = len(claim_tokens & record.title_tokens)
+            evidence_overlap = len(claim_tokens & record.evidence_tokens)
+            query_overlap = len(claim_tokens & record.query_tokens)
+            domain_overlap = len(claim_tokens & record.domain_tokens)
+            score = (
+                title_overlap * 5
+                + evidence_overlap * 3
+                + domain_overlap * 2
+                + query_overlap
+            )
+            if score <= 0:
+                continue
+            scored.append(
+                (
+                    score,
+                    int(record.official),
+                    int(record.authority_score),
+                    record,
+                )
+            )
+        if not scored:
+            return None
+        scored.sort(reverse=True, key=lambda item: item[:3])
+        best = scored[0][3]
+        if scored[0][0] < 3:
+            return None
+        return best
 
     def _build_verified_evidence_items(
         self, task: Task, task_state: TaskState
     ) -> list[VerifiedEvidenceItem]:
         items: list[VerifiedEvidenceItem] = []
+        seen_urls: set[str] = set()
         seen_statements: set[str] = set()
-        authoritative_records = self._authoritative_evidence_records(task, task_state)
-
-        raw_reports: list[str] = []
+        records = self._authoritative_evidence_records(task, task_state)
+        reports: list[str] = []
         for idx in sorted(task_state.subtask_reports.keys()):
-            raw_reports.append(str(task_state.subtask_reports[idx]))
-        raw_reports.extend(
+            reports.append(str(task_state.subtask_reports[idx]))
+        reports.extend(
             str(item) for item in task_state.all_findings if str(item).strip()
         )
-        combined = "\n\n".join(raw_reports[-6:])
-        claims = self._extract_claim_candidates(combined)
+        claims = self._extract_claim_candidates("\n\n".join(reports[-8:]))
 
         for claim in claims:
-            claim_tokens = self._tokenize_claim_text(claim)
-            if not claim_tokens:
+            record = self._match_claim_to_record(claim, records)
+            if record is None or not record.official:
                 continue
-            primary_supporting = [
-                record
-                for record in authoritative_records
-                if bool(record.get("official", False))
-                and len(claim_tokens & record["tokens"]) >= 2
-            ]
-            primary_supporting.sort(
-                key=lambda record: int(record.get("authority_score", 0) or 0),
-                reverse=True,
-            )
-            if not primary_supporting:
+            statement = claim
+            if record.content_excerpt and not self._claim_is_specific(claim):
+                statement = f"{record.title}: {record.content_excerpt}"
+            statement = self._sanitize_claim_candidate(statement) or statement
+            normalized = claim.lower()
+            if normalized in seen_statements:
                 continue
-            sanitized_claim = self._sanitize_claim_candidate(claim)
-            if not sanitized_claim:
+            seen_statements.add(normalized)
+            if record.url and record.url in seen_urls:
                 continue
-            key = sanitized_claim.lower()
-            if key in seen_statements:
-                continue
-            seen_statements.add(key)
-            top = primary_supporting[0]
-            items.append(
-                VerifiedEvidenceItem(
-                    statement=sanitized_claim,
-                    title=str(top.get("title", "")).strip(),
-                    domain=str(top.get("domain", "")).strip().lower(),
-                    url=str(top.get("url", "")).strip(),
-                )
-            )
-            if len(items) >= 6:
-                return items
-
-        seen_sources: set[tuple[str, str]] = set()
-        for record in authoritative_records:
-            if not bool(record.get("official", False)):
-                continue
-            title = str(record.get("title", "")).strip()
-            domain = str(record.get("domain", "")).strip().lower()
-            if not title or not domain:
-                continue
-            key = (title.lower(), domain)
-            if key in seen_sources:
-                continue
-            seen_sources.add(key)
-            statement = f"{title} is an official source relevant to this task."
-            if statement.lower() in seen_statements:
-                continue
+            if record.url:
+                seen_urls.add(record.url)
             items.append(
                 VerifiedEvidenceItem(
                     statement=statement,
-                    title=title,
-                    domain=domain,
-                    url=str(record.get("url", "")).strip(),
+                    title=record.title,
+                    domain=record.domain,
+                    url=record.url,
+                    query=record.query,
+                    source_excerpt=record.content_excerpt,
+                    source_tier=record.source_tier,
+                    authority_score=record.authority_score,
+                    official=record.official,
                 )
             )
-            if len(items) >= 6:
+            if len(items) >= 8:
+                return items
+
+        for record in records:
+            if not record.official:
+                continue
+            statement = (
+                self._build_primary_record_claims([record])[0]
+                .split(" [primary support:", 1)[0]
+                .lstrip("- ")
+                .strip()
+            )
+            normalized = statement.lower()
+            if normalized in seen_statements:
+                continue
+            if record.url and record.url in seen_urls:
+                continue
+            seen_statements.add(normalized)
+            if record.url:
+                seen_urls.add(record.url)
+            items.append(
+                VerifiedEvidenceItem(
+                    statement=statement,
+                    title=record.title,
+                    domain=record.domain,
+                    url=record.url,
+                    query=record.query,
+                    source_excerpt=record.content_excerpt,
+                    source_tier=record.source_tier,
+                    authority_score=record.authority_score,
+                    official=record.official,
+                )
+            )
+            if len(items) >= 8:
                 break
         return items
 
-    def _authoritative_evidence_records(
-        self, task: Task, task_state: TaskState
-    ) -> list[dict[str, Any]]:
-        records: list[dict[str, Any]] = []
-        for idx, agent in sorted(task_state.subtask_agents.items()):
-            try:
-                agent_state = getattr(agent, "_state", {}).get(task.name)
-                if agent_state is None:
-                    continue
-                for entry in list(getattr(agent_state, "search_history", []) or []):
-                    query = str(entry.get("query", "")).strip()
-                    for hit in list(entry.get("results", []) or []):
-                        authority_score = int(hit.get("authority_score", 0) or 0)
-                        if authority_score < 3:
-                            continue
-                        title = str(hit.get("title", "")).strip()
-                        domain = str(hit.get("domain", "")).strip().lower()
-                        url = str(hit.get("url", "")).strip()
-                        official = bool(hit.get("official_source", False))
-                        token_source = " ".join(
-                            part for part in (title, domain, query) if part
-                        )
-                        records.append(
-                            {
-                                "subtask": idx + 1,
-                                "title": title,
-                                "domain": domain,
-                                "url": url,
-                                "official": official,
-                                "authority_score": authority_score,
-                                "tokens": self._tokenize_claim_text(token_source),
-                            }
-                        )
-            except Exception:
-                continue
-        return records
-
     def _build_claim_verification_brief(self, task: Task, task_state: TaskState) -> str:
-        """Build a deterministic claim verification summary from authoritative hits."""
-        authoritative_records = self._authoritative_evidence_records(task, task_state)
-        if not authoritative_records:
+        records = self._authoritative_evidence_records(task, task_state)
+        if not records:
             return "## Claim Verification Brief\n- No authoritative evidence records available yet."
 
-        raw_reports: list[str] = []
+        reports: list[str] = []
         for idx in sorted(task_state.subtask_reports.keys()):
-            raw_reports.append(str(task_state.subtask_reports[idx]))
-        raw_reports.extend(
+            reports.append(str(task_state.subtask_reports[idx]))
+        reports.extend(
             str(item) for item in task_state.all_findings if str(item).strip()
         )
-        combined = "\n\n".join(raw_reports[-6:])
-        claims = self._extract_claim_candidates(combined)
+        claims = self._extract_claim_candidates("\n\n".join(reports[-8:]))
         if not claims:
-            fallback_verified = self._build_primary_record_claims(authoritative_records)
+            fallback_verified = self._build_primary_record_claims(records)
             if not fallback_verified:
                 return (
                     "## Claim Verification Brief\n- No claim candidates extracted yet."
@@ -3054,56 +4241,42 @@ class ResearchOrchestrator(OrchestratorAgent):
         verified: list[str] = []
         tentative: list[str] = []
         unsupported: list[str] = []
-
         for claim in claims:
             claim_tokens = self._tokenize_claim_text(claim)
-            if not claim_tokens:
-                continue
-            supporting: list[dict[str, Any]] = []
-            for record in authoritative_records:
-                overlap = len(claim_tokens & record["tokens"])
+            supporting: list[SourceEvidenceRecord] = []
+            for record in records:
+                overlap = len(claim_tokens & record.title_tokens) * 2 + len(
+                    claim_tokens & record.evidence_tokens
+                )
                 if overlap >= 2:
                     supporting.append(record)
             supporting.sort(
-                key=lambda record: (
-                    int(record["official"]),
-                    int(record["authority_score"]),
-                ),
+                key=lambda record: (int(record.official), int(record.authority_score)),
                 reverse=True,
             )
-            primary_supporting = [
-                record for record in supporting if bool(record.get("official", False))
-            ]
-            if primary_supporting:
-                refs = ", ".join(
-                    f"{item['domain'] or 'unknown'}" for item in primary_supporting[:2]
-                )
+            primary = [record for record in supporting if record.official]
+            if primary:
+                refs = ", ".join(item.domain or "unknown" for item in primary[:2])
                 verified.append(f"- {claim} [primary support: {refs}]")
             elif supporting:
-                refs = ", ".join(
-                    f"{item['domain'] or 'unknown'}" for item in supporting[:2]
-                )
+                refs = ", ".join(item.domain or "unknown" for item in supporting[:2])
                 tentative.append(f"- {claim} [partial support: {refs}]")
             else:
                 unsupported.append(f"- {claim}")
 
         lines = ["## Claim Verification Brief"]
         if verified:
-            lines.append("### Verified Claims")
-            lines.extend(verified[:8])
-        elif authoritative_records:
-            fallback_verified = self._build_primary_record_claims(authoritative_records)
+            lines.extend(["### Verified Claims", *verified[:8]])
+        else:
+            fallback_verified = self._build_primary_record_claims(records)
             if fallback_verified:
-                lines.append("### Verified Claims")
-                lines.extend(fallback_verified)
+                lines.extend(["### Verified Claims", *fallback_verified[:6]])
         if tentative:
-            lines.append("")
-            lines.append("### Tentative Claims")
-            lines.extend(tentative[:6])
+            lines.extend(["", "### Tentative Claims", *tentative[:6]])
         if unsupported:
-            lines.append("")
-            lines.append("### Unsupported or Weakly Supported Claims")
-            lines.extend(unsupported[:5])
+            lines.extend(
+                ["", "### Unsupported or Weakly Supported Claims", *unsupported[:6]]
+            )
         return "\n".join(lines)
 
     def _extract_verified_claim_lines(
@@ -3122,41 +4295,98 @@ class ResearchOrchestrator(OrchestratorAgent):
         lines: list[str] = []
         for raw_line in match.group(1).splitlines():
             line = raw_line.strip()
-            if line.startswith("- "):
-                cleaned = re.sub(r"\s*\[primary support:.*?\]\s*$", "", line).strip()
-                sanitized = self._sanitize_claim_candidate(cleaned.lstrip("- ").strip())
-                if sanitized:
-                    lines.append(f"- {sanitized}")
+            if not line.startswith("- "):
+                continue
+            cleaned = re.sub(
+                r"\s*\[(?:primary|partial)\s+support:.*?\]\s*$", "", line
+            ).strip()
+            sanitized = self._sanitize_claim_candidate(cleaned.lstrip("- ").strip())
+            if sanitized:
+                lines.append(f"- {sanitized}")
         return lines
 
-    def _enforce_verified_findings_policy(
+    def _extract_tentative_claim_lines(self, verification_brief: str) -> list[str]:
+        match = re.search(
+            r"(?ims)^###\s+Tentative Claims\s*(.*?)(?=^###\s+|\Z)",
+            verification_brief or "",
+        )
+        if not match:
+            return []
+        lines: list[str] = []
+        for raw_line in match.group(1).splitlines():
+            line = raw_line.strip()
+            if not line.startswith("- "):
+                continue
+            cleaned = re.sub(r"\s*\[partial support:.*?\]\s*$", "", line).strip()
+            sanitized = self._sanitize_claim_candidate(cleaned.lstrip("- ").strip())
+            if sanitized:
+                lines.append(f"- {sanitized}")
+        return lines
+
+    def _extract_open_uncertainty_lines(self, verification_brief: str) -> list[str]:
+        match = re.search(
+            r"(?ims)^###\s+Unsupported or Weakly Supported Claims\s*(.*?)(?=^###\s+|\Z)",
+            verification_brief or "",
+        )
+        if not match:
+            return []
+        lines: list[str] = []
+        for raw_line in match.group(1).splitlines():
+            line = raw_line.strip()
+            if line.startswith("- "):
+                lines.append(line.rstrip("."))
+        return lines
+
+    def _enforce_evidence_status_appendix_policy(
         self,
         report_text: str,
         verification_brief: str,
+        *,
         verified_items: list[VerifiedEvidenceItem] | None = None,
     ) -> str:
-        """
-        Replace the Verified Findings section with only primary-source-supported
-        claims from the verification brief. This prevents the synthesis model from
-        promoting tentative items into the verified section.
-        """
-        verified_claims = self._extract_verified_claim_lines(
+        verified_lines = self._extract_verified_claim_lines(
             verification_brief,
             verified_items=verified_items,
+        ) or ["- No primary-source-supported claims met the verification bar."]
+        tentative_lines = self._extract_tentative_claim_lines(verification_brief) or [
+            "- No additional tentative claims were preserved."
+        ]
+        uncertainty_lines = self._extract_open_uncertainty_lines(
+            verification_brief
+        ) or ["- No open uncertainties were preserved."]
+        appendix = "\n".join(
+            [
+                "## Evidence Status Appendix",
+                "### Verified Findings",
+                *verified_lines,
+                "",
+                "### Tentative Findings",
+                *tentative_lines,
+                "",
+                "### Open Uncertainties",
+                *uncertainty_lines,
+            ]
         )
-        verified_section = (
-            "\n".join(verified_claims)
-            if verified_claims
-            else "- No primary-source-supported claims met the verification bar."
-        )
-        pattern = re.compile(
-            r"(?ims)(^##\s+Verified Findings\s*\n)(.*?)(?=^##\s+Tentative Findings\b|\Z)"
-        )
-        if pattern.search(report_text or ""):
-            return pattern.sub(rf"\1{verified_section}\n\n", report_text, count=1)
-        return (
-            report_text or ""
-        ).strip() + f"\n\n## Verified Findings\n{verified_section}\n"
+        base = re.sub(
+            r"(?ims)\n*##\s+Evidence Status Appendix\b.*\Z",
+            "",
+            (report_text or "").strip(),
+        ).strip()
+        if base:
+            return f"{base}\n\n{appendix}".strip()
+        return appendix
+
+    def _report_has_unknown_urls(
+        self,
+        report_text: str,
+        *,
+        allowed_urls: list[str],
+    ) -> bool:
+        allowed = {clean_url(url) for url in allowed_urls if clean_url(url)}
+        found = [
+            clean_url(raw) for raw in re.findall(r"https?://[^\s)]+", report_text or "")
+        ]
+        return any(url and url not in allowed for url in found)
 
     def _sanitize_final_report_output(
         self,
@@ -3167,62 +4397,200 @@ class ResearchOrchestrator(OrchestratorAgent):
         text = (report_text or "").strip()
         if not text:
             return text
-
-        section_markers = [
-            "## Verified Findings",
-            "## Tentative Findings",
-            "## Open Uncertainties",
-            "## Next Verification Steps",
-        ]
-        positions = [text.find(marker) for marker in section_markers if marker in text]
-        if positions:
-            text = text[min(positions) :].lstrip()
-        else:
-            text = re.sub(
-                r"(?is)^\s*(okay[,!].*?|here(?:'|’)s\b.*?|certainly[,!].*?)\n+",
-                "",
-                text,
-                count=1,
-            ).strip()
-
-        text = re.sub(r"(?im)^\s*##\s+Final Report:.*\n?", "", text)
         text = re.sub(
-            r"(?is)^\s*\*\*Executive Summary:\*\*.*?(?=^##\s+|\Z)",
+            r"(?is)^\s*(okay[,!].*?|here(?:'|’)s\b.*?|certainly[,!].*?)\n+",
             "",
             text,
+            count=1,
         ).strip()
-        text = re.sub(r"(?im)^\s*---\s*$", "", text)
+        text = re.sub(r"(?im)^\s*#\s+Final Research Report\s*\n?", "", text)
+        text = re.sub(r"(?im)^\s*##\s+Final Report:.*\n?", "", text)
+        text = re.sub(
+            r"(?im)^\s*\*\*Executive Summary:\*\*\s*",
+            "## Executive Summary\n",
+            text,
+        )
+        for heading in FINAL_REPORT_CORE_SECTIONS + ("## Evidence Status Appendix",):
+            text = re.sub(
+                rf"\s*{re.escape(heading)}\s*",
+                f"\n{heading}\n",
+                text,
+            )
+        text = re.sub(r"\s+(###\s+)", r"\n\1", text)
+        text = re.sub(r"(###\s+[^\n*]+?)\s+([*-])", r"\1\n\2", text)
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
-        return self._enforce_verified_findings_policy(
+        text = self._dedupe_top_level_sections(text)
+        text = self._enforce_evidence_status_appendix_policy(
             text,
             verification_brief,
             verified_items=verified_items,
-        ).strip()
+        )
+        return text.strip()
+
+    def _collect_clean_subtask_reports(self, task_state: TaskState) -> list[str]:
+        reports: list[str] = []
+        for idx in sorted(task_state.subtask_reports.keys()):
+            cleaned = self._strip_control_channel_annotations(
+                str(task_state.subtask_reports[idx] or "")
+            )
+            if cleaned.strip():
+                reports.append(cleaned.strip())
+        for report in list(task_state.all_reports or []):
+            cleaned = self._strip_control_channel_annotations(str(report or ""))
+            if cleaned.strip():
+                reports.append(cleaned.strip())
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for report in reports:
+            normalized = re.sub(r"\s+", " ", report).strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                deduped.append(report)
+        return deduped
+
+    def _build_structured_evidence_packet(
+        self,
+        task: Task,
+        task_state: TaskState,
+        *,
+        verification_brief: str,
+        verified_items: list[VerifiedEvidenceItem],
+    ) -> str:
+        records = self._authoritative_evidence_records(task, task_state)
+        record_by_url = {record.url: record for record in records if record.url}
+        lines = [
+            "## Structured Evidence Packet",
+            "### Verified Findings With Source Lineage",
+        ]
+        if verified_items:
+            for item in verified_items[:10]:
+                lines.append(f"- {item.statement}")
+                lines.append(
+                    f"  Source: {item.title} | {item.domain} | {item.url or 'No URL preserved'}"
+                )
+                record = record_by_url.get(item.url or "")
+                excerpt = (
+                    item.source_excerpt
+                    or (record.content_excerpt if record else "")
+                    or (record.summary if record else "")
+                )
+                if excerpt:
+                    lines.append(f"  Evidence excerpt: {excerpt}")
+        else:
+            lines.append("- No verified findings with source lineage were retained.")
+        uncertainties = self._extract_open_uncertainty_lines(verification_brief)
+        lines.extend(["", "### Remaining Open Uncertainties"])
+        if uncertainties:
+            lines.extend(uncertainties[:10])
+        else:
+            lines.append("- No open uncertainties were preserved.")
+        return "\n".join(lines)
+
+    def _build_deterministic_final_report(
+        self,
+        task: Task,
+        task_state: TaskState,
+        *,
+        combined_findings: str = "",
+        verification_brief: str = "",
+        verified_items: list[VerifiedEvidenceItem] | None = None,
+        reason: str = "",
+    ) -> str:
+        verified_items = verified_items or self._build_verified_evidence_items(
+            task, task_state
+        )
+        verification_brief = verification_brief or self._build_claim_verification_brief(
+            task, task_state
+        )
+        structured_packet = self._build_structured_evidence_packet(
+            task,
+            task_state,
+            verification_brief=verification_brief,
+            verified_items=verified_items,
+        )
+        findings_lines = [
+            "## Executive Summary",
+            "This report preserves only the strongest retained evidence and distinguishes supported findings from unresolved gaps.",
+            "",
+            "## Scope and Method",
+            "The report is synthesized from retained subtask notes, authoritative search results, and deterministic claim verification over official or primary sources.",
+            "",
+            "## Findings",
+            "### What the retained evidence supports",
+        ]
+        if verified_items:
+            for item in verified_items[:6]:
+                source_suffix = (
+                    f" (Source: {item.title} | {item.url})"
+                    if item.url
+                    else f" (Source: {item.title} | {item.domain})"
+                )
+                findings_lines.append(f"- {item.statement}{source_suffix}")
+        else:
+            findings_lines.append(
+                "- No primary-source-supported findings were retained strongly enough to summarize here."
+            )
+        findings_lines.extend(
+            [
+                "",
+                "## Comparative Analysis",
+                "The strongest leads are the ones backed by official or primary program pages with concrete supporting excerpts. Weaker leads are retained only as tentative or unresolved.",
+                "",
+                "## Limitations and Open Questions",
+                "### Still unclear from the retained evidence",
+            ]
+        )
+        open_uncertainties = self._extract_open_uncertainty_lines(verification_brief)
+        if open_uncertainties:
+            findings_lines.extend(open_uncertainties[:8])
+        else:
+            findings_lines.append("- No additional open uncertainties were preserved.")
+        findings_lines.extend(
+            [
+                "",
+                "## Recommended Next Steps",
+                "1. Verify the strongest official leads directly on their current program pages.",
+                "2. Treat any missing current-status, eligibility, funding, or deadline detail as unresolved until directly confirmed.",
+            ]
+        )
+        report = "\n".join(findings_lines)
+        return self._enforce_evidence_status_appendix_policy(
+            report,
+            verification_brief,
+            verified_items=verified_items,
+        )
+
+    def _fallback_final_report_from_findings(
+        self,
+        task: Task,
+        combined_findings: str,
+        *,
+        reason: str,
+    ) -> str:
+        return self._build_deterministic_final_report(
+            task,
+            self.task_states[task.name],
+            combined_findings=combined_findings,
+            reason=reason,
+        )
 
     def get_current_subtask(self, task_name: str) -> str | None:
-        """Get current subtask description for a task"""
         if task_name not in self.task_states:
             return None
-
         task_state = self.task_states[task_name]
         if not task_state.research_plan or not task_state.research_plan.subtasks:
             return None
-
         if task_state.subtask_index < len(task_state.research_plan.subtasks):
             subtask = task_state.research_plan.subtasks[task_state.subtask_index]
             return f"{subtask.description} (Success: {subtask.success_criteria})"
-
         return "All subtasks completed"
 
     def get_task_progress(self, task_name: str) -> dict[str, any]:
-        """Get detailed progress information for a task with subtask agent details"""
         if task_name not in self.task_states:
             return {"progress": 0.0, "subtasks": [], "completed": 0, "total": 0}
-
         task_state = self.task_states[task_name]
         if not task_state.research_plan:
             return {"progress": 0.0, "subtasks": [], "completed": 0, "total": 0}
-
         subtasks = []
         for i, subtask in enumerate(task_state.research_plan.subtasks):
             subtask_info = {
@@ -3235,19 +4603,11 @@ class ResearchOrchestrator(OrchestratorAgent):
                 "has_report": i in task_state.subtask_reports,
                 "guidance": task_state.get_subtask_guidance(i),
             }
-
-            # Add agent metrics if available
             if i in task_state.subtask_agents:
-                agent = task_state.subtask_agents[i]
-                agent_metrics = agent.get_metrics()
-                subtask_info.update(
-                    {
-                        "agent_metrics": agent_metrics,
-                    }
-                )
-
+                subtask_info["agent_metrics"] = task_state.subtask_agents[
+                    i
+                ].get_metrics()
             subtasks.append(subtask_info)
-
         return {
             "progress": task_state.get_progress_percentage(),
             "subtasks": subtasks,
@@ -3263,153 +4623,133 @@ class ResearchOrchestrator(OrchestratorAgent):
     async def synthesize_final_report(
         self, task: Task, research_reports: list[str]
     ) -> str:
-        """Combines multiple research reports into one cohesive final report with token-aware summarization"""
-        if self.report_chains is None:
-            raise RuntimeError(
-                "LangChain report chains are required for report synthesis"
-            )
-
-        preserve_summary_facts = os.getenv(
-            "ORCHESTRATOR_SUMMARIZER_PRESERVE_FACTS",
-            "0",
-        ).strip().lower() in {"1", "true", "yes", "on"}
-
-        # Deduplicate each report while preserving detail
-        deduplicated_findings = []
-        for i, report in enumerate(research_reports):
-            # Use summarization if report is too long and context management is enabled
-            if (
-                self.context_management_enabled
-                and self.summarizer
-                and self.token_budget
-            ):
-                try:
-                    report_tokens = self.token_counter.count_tokens(report)
-                    max_report_tokens = self.token_budget.previous_findings // len(
-                        research_reports
-                    )  # Divide budget across reports
-
-                    if report_tokens > max_report_tokens:
-                        # Summarize report before deduplication
-                        (
-                            summary,
-                            level,
-                            _facts,
-                        ) = await self._summarize_on_demand_with_timeout(
-                            report,
-                            max_tokens=max_report_tokens,
-                            preserve_facts=preserve_summary_facts,
-                            label=f"report-{i + 1}",
-                        )
-                        logger.debug(
-                            f"Summarized report {i+1} for synthesis: {report_tokens} -> {self.token_counter.count_tokens(summary)} tokens"
-                        )
-                        report = summary
-                except Exception as e:
-                    logger.warning(
-                        f"Error summarizing report {i+1}, using full content: {e}"
-                    )
-
-            deduplicated_findings.append(
-                await self._dedupe_report_with_timeout(
-                    report=report,
-                    index=i + 1,
-                    total=len(research_reports),
-                )
-            )
-
-        # Combine deduplicated findings
-        combined_findings = "\n\n---\n\n".join(deduplicated_findings)
-
-        # Summarize combined findings if too long before final synthesis
-        if self.context_management_enabled and self.summarizer and self.token_budget:
-            try:
-                combined_tokens = self.token_counter.count_tokens(combined_findings)
-                max_combined_tokens = self.token_budget.previous_findings
-
-                if combined_tokens > max_combined_tokens:
-                    # Summarize combined findings
-                    (
-                        summary,
-                        level,
-                        _facts,
-                    ) = await self._summarize_on_demand_with_timeout(
-                        combined_findings,
-                        max_tokens=max_combined_tokens,
-                        preserve_facts=preserve_summary_facts,
-                        label="combined-findings",
-                    )
-                    logger.debug(
-                        f"Summarized combined findings for final synthesis: {combined_tokens} -> {self.token_counter.count_tokens(summary)} tokens"
-                    )
-                    combined_findings = summary
-            except Exception as e:
-                logger.warning(
-                    f"Error summarizing combined findings, using full content: {e}"
-                )
-
-        # Create final synthesis with full context
-        self.metrics["total_llm_calls"] += 1
-        evidence_brief = self._build_task_evidence_brief(
-            task, self.task_states[task.name]
-        )
-        verification_brief = self._build_claim_verification_brief(
-            task, self.task_states[task.name]
-        )
-        verified_items = self._build_verified_evidence_items(
+        task_state = self.task_states[task.name]
+        cleaned_reports = [
+            self._strip_control_channel_annotations(str(report or "")).strip()
+            for report in research_reports
+            if str(report or "").strip()
+        ]
+        combined_findings = "\n\n---\n\n".join(cleaned_reports)
+        evidence_brief = self._build_task_evidence_brief(task, task_state)
+        verification_brief = self._build_claim_verification_brief(task, task_state)
+        verified_items = self._build_verified_evidence_items(task, task_state)
+        structured_packet = self._build_structured_evidence_packet(
             task,
-            self.task_states[task.name],
-        )
-        final_report = await self.report_chains.asynthesize(
-            task_name=task.name,
-            task_description=task.description,
-            combined_findings=combined_findings,
-            evidence_brief=evidence_brief,
+            task_state,
             verification_brief=verification_brief,
-        )
-        final_report = self._sanitize_final_report_output(
-            final_report,
-            verification_brief,
             verified_items=verified_items,
         )
-        if self._is_meta_critique_output(final_report, task.description):
-            logger.warning(
-                "Detected meta-critique drift in final synthesis for task %s; attempting repair pass",
-                task.name,
+        allowed_urls = [item.url for item in verified_items if item.url]
+        deterministic_report = self._build_deterministic_final_report(
+            task,
+            task_state,
+            combined_findings=combined_findings,
+            verification_brief=verification_brief,
+            verified_items=verified_items,
+            reason="deterministic-baseline",
+        )
+
+        if self.report_chains is None:
+            return deterministic_report
+
+        manager = URLFlagManager()
+        flagged_findings, flag_map = manager.replace_urls_with_flags(combined_findings)
+        flagged_evidence_brief, evidence_map = manager.replace_urls_with_flags(
+            evidence_brief
+        )
+        flag_map.update(evidence_map)
+        flagged_verification_brief, verification_map = manager.replace_urls_with_flags(
+            verification_brief
+        )
+        flag_map.update(verification_map)
+        flagged_packet, packet_map = manager.replace_urls_with_flags(structured_packet)
+        flag_map.update(packet_map)
+        url_reference_table = (
+            "\n".join(
+                ["URL reference table:"]
+                + [f"- {flag}: {url}" for flag, url in sorted(flag_map.items())]
             )
+            if flag_map
+            else ""
+        )
+
+        async def _generate() -> str:
+            self.metrics["total_llm_calls"] += 1
+            draft = await self.report_chains.asynthesize(
+                task_name=task.name,
+                task_description=task.description,
+                combined_findings_with_flags=flagged_findings,
+                evidence_brief_with_flags=flagged_evidence_brief,
+                verification_brief_with_flags=flagged_verification_brief,
+                structured_evidence_packet_with_flags=flagged_packet,
+                url_reference_table=url_reference_table,
+            )
+            return manager.replace_flags_with_urls(draft, flag_map)
+
+        async def _repair(invalid_draft: str) -> str:
+            self.metrics["total_llm_calls"] += 1
+            repaired = await self.report_chains.arepair_synthesis(
+                task_name=task.name,
+                task_description=task.description,
+                invalid_draft=invalid_draft,
+                combined_findings_with_flags=flagged_findings,
+                evidence_brief_with_flags=flagged_evidence_brief,
+                verification_brief_with_flags=flagged_verification_brief,
+                structured_evidence_packet_with_flags=flagged_packet,
+                url_reference_table=url_reference_table,
+            )
+            if not isinstance(repaired, str):
+                return ""
+            return manager.replace_flags_with_urls(repaired, flag_map)
+
+        model_report = None
+        try:
+            model_report = await _generate()
+        except Exception as exc:
+            logger.warning("Final synthesis failed for task %s: %s", task.name, exc)
+
+        for candidate in [model_report]:
+            if not candidate:
+                continue
+            sanitized = self._sanitize_final_report_output(
+                candidate,
+                verification_brief,
+                verified_items=verified_items,
+            )
+            if self._final_report_is_invalid(sanitized, task.description):
+                continue
+            if self._report_has_unknown_urls(sanitized, allowed_urls=allowed_urls):
+                continue
+            if any(
+                phrase in sanitized.lower()
+                for phrase in ("currently open opportunities", "immediately actionable")
+            ):
+                continue
+            return sanitized
+
+        if model_report:
             try:
-                self.metrics["total_llm_calls"] += 1
-                repaired = await self.report_chains.arepair_synthesis(
-                    task_name=task.name,
-                    task_description=task.description,
-                    invalid_draft=final_report,
-                    combined_findings=combined_findings,
-                    evidence_brief=evidence_brief,
-                    verification_brief=verification_brief,
-                )
-                repaired = self._sanitize_final_report_output(
+                repaired = await _repair(model_report)
+                sanitized = self._sanitize_final_report_output(
                     repaired,
                     verification_brief,
                     verified_items=verified_items,
                 )
-                if not self._is_meta_critique_output(repaired, task.description):
-                    return repaired
+                if (
+                    not self._final_report_is_invalid(sanitized, task.description)
+                    and not self._report_has_unknown_urls(
+                        sanitized, allowed_urls=allowed_urls
+                    )
+                    and "currently open opportunities" not in sanitized.lower()
+                    and "immediately actionable" not in sanitized.lower()
+                ):
+                    return sanitized
+            except Exception as exc:
                 logger.warning(
-                    "Repair pass still produced meta-critique drift for task %s; using deterministic fallback",
-                    task.name,
+                    "Final synthesis repair failed for task %s: %s", task.name, exc
                 )
-            except Exception as e:
-                logger.warning(
-                    "Repair synthesis failed for task %s: %s; using deterministic fallback",
-                    task.name,
-                    e,
-                )
-            return self._fallback_final_report_from_findings(
-                task,
-                combined_findings,
-                reason="meta-critique-drift",
-            )
-        return final_report
+
+        return deterministic_report
 
     async def _dedupe_report_with_timeout(
         self,
@@ -3418,10 +4758,8 @@ class ResearchOrchestrator(OrchestratorAgent):
         index: int,
         total: int,
     ) -> str:
-        """Deduplicate one report with timeout + deterministic fallback."""
         if self.report_chains is None:
             return report
-
         self.metrics["total_llm_calls"] += 1
         raw_timeout = float(os.getenv("ORCHESTRATOR_DEDUPE_TIMEOUT_SECONDS", "120"))
         fallback_max_tokens = max(
@@ -3457,7 +4795,6 @@ class ResearchOrchestrator(OrchestratorAgent):
                 total,
                 e,
             )
-
         return self._truncate_text_by_token_budget(
             report,
             max_tokens=fallback_max_tokens,
@@ -3472,10 +4809,8 @@ class ResearchOrchestrator(OrchestratorAgent):
         preserve_facts: bool,
         label: str,
     ) -> tuple[str, str, Any]:
-        """Run synchronous summarizer logic in a bounded worker thread."""
         if not self.summarizer:
             return content, "none", None
-
         safe_max_tokens = max(64, int(max_tokens))
         raw_timeout = float(os.getenv("ORCHESTRATOR_SUMMARIZER_TIMEOUT_SECONDS", "120"))
         try:
@@ -3507,7 +4842,6 @@ class ResearchOrchestrator(OrchestratorAgent):
                 label,
                 e,
             )
-
         fallback = self._truncate_text_by_token_budget(
             content,
             max_tokens=safe_max_tokens,
@@ -3516,12 +4850,10 @@ class ResearchOrchestrator(OrchestratorAgent):
         return fallback, "fallback", None
 
     async def __aenter__(self):
-        """Async context manager entry"""
         if self.use_mcp:
             await self.initialize_mcp()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit"""
         if self.use_mcp:
             await self.cleanup_mcp()

@@ -121,9 +121,9 @@ SEARCH QUERY RULES:
 - When action is "search", query must be a short, human-readable search engine query, not an instruction.
 - Do not write imperative phrases like "for each identified program", "collect key details", "create a table", or "assess eligibility".
 - Use entities, constraints, and evidence targets instead, for example:
-  - "Brown AI REU deadline eligibility 2024"
-  - "NSF REU machine learning undergraduate official site 2024"
-  - "WPI REU data science application deadline official"
+  - "official undergraduate research fellowship deadline eligibility"
+  - "primary organization summer research program application deadline"
+  - "government student grant official site eligibility"
 - Keep search queries under 14 words.
 
 SUMMARIZE / COMPLETE RULES:

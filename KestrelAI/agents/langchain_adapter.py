@@ -10,9 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from collections.abc import Callable
 from typing import Any, TypeVar
-from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
@@ -36,6 +36,19 @@ logger = logging.getLogger(__name__)
 TModel = TypeVar("TModel", bound=BaseModel)
 _OPENAI_COMPATIBLE_PROVIDERS = {"openai", "openai_compatible", "openai-compatible"}
 _OLLAMA_NATIVE_PROVIDERS = {"ollama_native", "ollama-native"}
+_INLINE_REASONING_PATTERN = re.compile(
+    r"(?is)<think>\s*(.*?)\s*</think>|<reasoning>\s*(.*?)\s*</reasoning>"
+)
+
+from KestrelAI.shared.llm_capabilities import (
+    NormalizedChatResponse,
+    ObservedLlmCapabilities,
+    infer_request_capability_profile,
+)
+from KestrelAI.shared.runtime_settings import (
+    default_local_api_key,
+    normalize_openai_base_url,
+)
 
 
 class LangChainChatAdapter:
@@ -58,6 +71,16 @@ class LangChainChatAdapter:
         self.temperature = temperature
         resolved_provider = (provider or os.getenv("LLM_PROVIDER", "")).strip().lower()
         self.provider = resolved_provider or "openai_compatible"
+        self.request_profile = infer_request_capability_profile(
+            model=self.model,
+            provider=self.provider,
+            host=host or "",
+        )
+        self._observed_capabilities = ObservedLlmCapabilities(
+            reasoning_control=self.request_profile.reasoning_control,
+            provider_transport=self.request_profile.provider_transport,
+            use_responses_api=self.request_profile.use_responses_api,
+        )
         raw_request_timeout_seconds = float(
             os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "300")
         )
@@ -101,6 +124,12 @@ class LangChainChatAdapter:
                 temperature=self.temperature,
                 timeout=request_timeout_seconds,
                 max_retries=request_max_retries,
+                use_responses_api=self.request_profile.use_responses_api or None,
+                output_version=self.request_profile.output_version,
+            )
+            self._observed_capabilities.structured_outputs_supported = hasattr(
+                self.client,
+                "with_structured_output",
             )
             return
 
@@ -115,6 +144,11 @@ class LangChainChatAdapter:
                 model=self.model,
                 base_url=self.host,
                 temperature=self.temperature,
+                reasoning=self.request_profile.reasoning_parameter,
+            )
+            self._observed_capabilities.structured_outputs_supported = hasattr(
+                self.client,
+                "with_structured_output",
             )
             return
 
@@ -158,7 +192,12 @@ class LangChainChatAdapter:
         if stream:
             return self.client.stream(lc_messages)
         response = self.client.invoke(lc_messages)
-        return response.content if hasattr(response, "content") else str(response)
+        return self._normalize_response(response).visible_text
+
+    def chat_response(self, messages: list[dict]) -> NormalizedChatResponse:
+        lc_messages = self._to_langchain_messages(messages)
+        response = self.client.invoke(lc_messages)
+        return self._normalize_response(response)
 
     def chat_structured(
         self, messages: list[dict], schema: type[TModel], max_retries: int = 2
@@ -239,23 +278,180 @@ class LangChainChatAdapter:
 
     @staticmethod
     def _normalize_openai_base_url(raw_base_url: str) -> str:
-        base_url = raw_base_url.strip()
-        if not base_url:
-            return "https://api.openai.com/v1"
-
-        if "://" not in base_url:
-            base_url = f"http://{base_url}"
-
-        parsed = urlparse(base_url)
-        path = (parsed.path or "").rstrip("/")
-        if not path:
-            return f"{base_url.rstrip('/')}/v1"
-        return base_url.rstrip("/")
+        return normalize_openai_base_url(raw_base_url)
 
     @staticmethod
     def _default_local_api_key(base_url: str) -> str | None:
-        host = (urlparse(base_url).hostname or "").lower()
-        local_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"}
-        if host in local_hosts or "ollama" in host:
-            return "not-required"
-        return None
+        return default_local_api_key(base_url)
+
+    def get_capabilities(self) -> dict[str, Any]:
+        return self._observed_capabilities.model_dump()
+
+    def _normalize_response(self, response: Any) -> NormalizedChatResponse:
+        content = getattr(response, "content", response)
+        visible_text, reasoning_text, reasoning_transport = self._extract_text_channels(
+            content
+        )
+
+        additional_kwargs = getattr(response, "additional_kwargs", None) or {}
+        tool_calls = list(getattr(response, "tool_calls", None) or [])
+        if not tool_calls and isinstance(additional_kwargs, dict):
+            tool_calls = list(additional_kwargs.get("tool_calls") or [])
+
+        separate_reasoning = ""
+        if isinstance(additional_kwargs, dict):
+            separate_reasoning = self._extract_additional_reasoning(additional_kwargs)
+            if separate_reasoning and not reasoning_text:
+                reasoning_text = separate_reasoning
+                reasoning_transport = (
+                    "separate_field"
+                    if reasoning_transport == "none"
+                    else reasoning_transport
+                )
+
+        normalized = NormalizedChatResponse(
+            visible_text=(visible_text or "").strip(),
+            reasoning_text=(reasoning_text or "").strip(),
+            reasoning_present=bool((reasoning_text or "").strip()),
+            reasoning_transport=reasoning_transport,
+            tool_calls=tool_calls,
+            raw_response=response,
+        )
+
+        if normalized.reasoning_present:
+            self._observed_capabilities.reasoning_transport = (
+                normalized.reasoning_transport or "unknown"
+            )
+        if normalized.tool_calls:
+            self._observed_capabilities.tool_calls_supported = True
+
+        return normalized
+
+    def _extract_text_channels(self, content: Any) -> tuple[str, str, str]:
+        if isinstance(content, str):
+            return self._split_inline_reasoning(content)
+
+        visible_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_transport = "none"
+
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, str):
+                    (
+                        visible_text,
+                        reasoning_text,
+                        inline_transport,
+                    ) = self._split_inline_reasoning(item)
+                    if visible_text:
+                        visible_parts.append(visible_text)
+                    if reasoning_text:
+                        reasoning_parts.append(reasoning_text)
+                        reasoning_transport = inline_transport
+                    continue
+
+                if not isinstance(item, dict):
+                    text = str(item).strip()
+                    if text:
+                        visible_parts.append(text)
+                    continue
+
+                item_type = str(item.get("type") or "").strip().lower()
+                item_text = self._extract_item_text(item)
+                if not item_text:
+                    continue
+
+                if item_type in {
+                    "reasoning",
+                    "thinking",
+                    "reasoning_content",
+                    "reasoning_summary",
+                    "summary_text",
+                }:
+                    reasoning_parts.append(item_text)
+                    reasoning_transport = "content_array"
+                else:
+                    (
+                        visible_text,
+                        reasoning_text,
+                        inline_transport,
+                    ) = self._split_inline_reasoning(item_text)
+                    if visible_text:
+                        visible_parts.append(visible_text)
+                    if reasoning_text:
+                        reasoning_parts.append(reasoning_text)
+                        reasoning_transport = inline_transport
+
+            return (
+                "\n".join(part for part in visible_parts if part).strip(),
+                "\n".join(part for part in reasoning_parts if part).strip(),
+                reasoning_transport,
+            )
+
+        text = str(content).strip()
+        return self._split_inline_reasoning(text)
+
+    @staticmethod
+    def _extract_item_text(item: dict[str, Any]) -> str:
+        direct_fields = ("text", "content", "thinking", "reasoning", "summary")
+        for field in direct_fields:
+            value = item.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, list):
+                joined = " ".join(
+                    str(part).strip() for part in value if str(part).strip()
+                ).strip()
+                if joined:
+                    return joined
+
+        nested_text = item.get("text")
+        if isinstance(nested_text, dict):
+            for field in ("value", "text"):
+                value = nested_text.get(field)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        return ""
+
+    @classmethod
+    def _split_inline_reasoning(cls, text: str) -> tuple[str, str, str]:
+        if not isinstance(text, str) or not text.strip():
+            return "", "", "none"
+
+        reasoning_chunks: list[str] = []
+
+        def _capture(match: re.Match[str]) -> str:
+            chunk = next((group for group in match.groups() if group), "")
+            chunk = chunk.strip()
+            if chunk:
+                reasoning_chunks.append(chunk)
+            return " "
+
+        visible_text = _INLINE_REASONING_PATTERN.sub(_capture, text).strip()
+        visible_text = re.sub(r"\n{3,}", "\n\n", visible_text)
+        reasoning_text = "\n".join(reasoning_chunks).strip()
+        if reasoning_text:
+            return visible_text, reasoning_text, "inline_text"
+        return text.strip(), "", "none"
+
+    @staticmethod
+    def _extract_additional_reasoning(additional_kwargs: dict[str, Any]) -> str:
+        reasoning_values: list[str] = []
+        for field in ("thinking", "reasoning", "reasoning_content"):
+            value = additional_kwargs.get(field)
+            if isinstance(value, str) and value.strip():
+                reasoning_values.append(value.strip())
+            elif isinstance(value, list):
+                flattened = " ".join(
+                    str(part).strip() for part in value if str(part).strip()
+                ).strip()
+                if flattened:
+                    reasoning_values.append(flattened)
+            elif isinstance(value, dict):
+                for nested_field in ("text", "summary", "content", "value"):
+                    nested = value.get(nested_field)
+                    if isinstance(nested, str) and nested.strip():
+                        reasoning_values.append(nested.strip())
+                        break
+        return "\n".join(reasoning_values).strip()

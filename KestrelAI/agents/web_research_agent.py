@@ -21,6 +21,16 @@ from KestrelAI.memory.hybrid_retriever import HybridRetriever
 from KestrelAI.memory.langchain_retrieval_pipeline import LangChainRetrievalPipeline
 from KestrelAI.memory.vector_store import MemoryStore
 from KestrelAI.shared.models import Task
+from KestrelAI.shared.research_utils import (
+    build_research_task_profile,
+    canonicalize_search_query,
+    derive_topic_terms,
+    extract_research_terms,
+    normalize_research_text,
+    text_is_opportunity_search,
+    timeouts_disabled,
+)
+from KestrelAI.shared.runtime_settings import normalize_max_context_tokens
 
 from .base_agent import AgentState
 from .base_agent import ResearchAgent as BaseResearchAgent
@@ -41,33 +51,165 @@ except Exception:  # pragma: no cover - dependency-gated path
 
 logger = logging.getLogger(__name__)
 
+CHECKPOINT_STOPWORDS = frozenset(
+    {
+        "find",
+        "finding",
+        "currently",
+        "current",
+        "open",
+        "available",
+        "support",
+        "supports",
+        "supporting",
+        "program",
+        "programs",
+        "opportunity",
+        "opportunities",
+        "funding",
+        "grants",
+        "grant",
+        "fellowship",
+        "fellowships",
+        "task",
+        "research",
+        "students",
+        "student",
+        "senior",
+        "undergraduate",
+        "undergraduates",
+        "united",
+        "states",
+        "us",
+    }
+)
+
+CHECKPOINT_STRONG_OPPORTUNITY_MARKERS = frozenset(
+    {
+        "fellowship",
+        "fellowships",
+        "grant",
+        "grants",
+        "scholarship",
+        "scholarships",
+        "internship",
+        "internships",
+        "stipend",
+        "stipends",
+    }
+)
+
+CHECKPOINT_PROGRAM_SUPPORT_MARKERS = frozenset(
+    {
+        "undergraduate",
+        "undergraduates",
+        "student",
+        "students",
+        "summer",
+        "research",
+        "apply",
+        "application",
+        "applications",
+        "deadline",
+        "deadlines",
+        "eligibility",
+        "stipend",
+        "funding",
+    }
+)
+
+CHECKPOINT_APPLICATION_MARKERS = frozenset(
+    {
+        "apply",
+        "application",
+        "applications",
+        "deadline",
+        "deadlines",
+        "eligibility",
+        "eligible",
+        "accepting",
+        "accepting applications",
+        "rolling",
+        "apply now",
+        "apply here",
+        "submit",
+    }
+)
+
+CHECKPOINT_DEGREE_MARKERS = frozenset(
+    {
+        "admission",
+        "degree",
+        "degrees",
+        "bachelor",
+        "bachelors",
+        "bachelor's",
+        "major",
+        "majors",
+        "minor",
+        "minors",
+        "curriculum",
+        "academics",
+        "admissions",
+        "student affairs",
+        "student life",
+        "undergraduate program",
+        "undergraduate programs",
+    }
+)
+
+CHECKPOINT_NEWS_RELEASE_MARKERS = frozenset(
+    {
+        "news release",
+        "press release",
+        "grant and award announcement",
+        "award announcement",
+        "media contact",
+        "for immediate release",
+    }
+)
+
+CHECKPOINT_PRECOLLEGE_MARKERS = frozenset(
+    {
+        "high school",
+        "high-school",
+        "secondary school",
+        "middle school",
+        "k-12",
+        "k12",
+        "teen",
+        "teens",
+        "youth",
+    }
+)
+
+CHECKPOINT_MIXED_AUDIENCE_PROFESSIONAL_MARKERS = frozenset(
+    {
+        "early-career",
+        "early career",
+        "professional",
+        "professionals",
+        "career researchers",
+        "researchers",
+        "all levels",
+    }
+)
+
+CHECKPOINT_INDIRECT_FUNDING_PATTERNS = (
+    r"\bawarded funding\b",
+    r"\bawarded (?:an? )?grant\b",
+    r"\bgrant awarded\b",
+    r"\breceived funding\b",
+    r"\bsecured funding\b",
+    r"\bcontinu(?:e|ing|ation) (?:an? |the )?.*?\b(?:program|initiative|cohort|fellowship|scholarship|internship)\b",
+    r"\bfunded to continue\b",
+    r"\bannounces? funding\b",
+    r"\baward(?:ed)? to continue\b",
+)
+
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
-
-
-def _resolve_max_context_tokens(config: ResearchConfig | None) -> int:
-    """Resolve max context tokens from config/env with sane bounds."""
-    fallback = 32768
-    raw = None
-    if config is not None:
-        raw = getattr(config, "max_context_tokens", None)
-    if raw is None:
-        raw = os.getenv("MAX_CONTEXT_TOKENS", fallback)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return fallback
-    return max(2048, min(value, 262144))
-
-
-def _timeouts_disabled() -> bool:
-    return os.getenv("GLOBAL_DISABLE_TIMEOUTS", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 def _env_timeout_seconds(
@@ -76,7 +218,7 @@ def _env_timeout_seconds(
     *,
     minimum: float = 1.0,
 ) -> float | None:
-    if _timeouts_disabled():
+    if timeouts_disabled():
         return None
     raw_value = float(os.getenv(name, default))
     if raw_value <= 0:
@@ -140,7 +282,9 @@ class WebResearchAgent(BaseResearchAgent):
             model_name = getattr(llm, "model", "gemma3:27b")
             self.token_counter = TokenCounter(model_name=model_name)
             self.token_budget = TokenBudget(
-                max_context=_resolve_max_context_tokens(self.config)
+                max_context=normalize_max_context_tokens(
+                    getattr(self.config, "max_context_tokens", None)
+                )
             )
             self.summarizer = MultiLevelSummarizer(
                 llm=llm,  # Pass the actual llm object, not model_name string
@@ -314,6 +458,488 @@ class WebResearchAgent(BaseResearchAgent):
             compact_lines = [f"- {line}" for line in compact_lines]
         return "\n".join(compact_lines)
 
+    @staticmethod
+    def _checkpoint_scope_terms(task: Task, max_terms: int = 10) -> set[str]:
+        tokens = derive_topic_terms(
+            str(task.description or task.name or ""),
+            max_terms=max_terms,
+            stopwords=CHECKPOINT_STOPWORDS,
+        )
+        if tokens:
+            return set(tokens[:max_terms])
+        fallback = extract_research_terms(
+            str(task.description or task.name or ""),
+            max_terms=max_terms,
+            stopwords=CHECKPOINT_STOPWORDS,
+        )
+        return set(fallback[:max_terms])
+
+    @staticmethod
+    def _evidence_focused_excerpt(*texts: object, limit: int = 220) -> str:
+        date_pattern = re.compile(
+            r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+            r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+            r"nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,\s+\d{4})?\b",
+            flags=re.IGNORECASE,
+        )
+        for raw_text in texts:
+            cleaned = re.sub(r"\s+", " ", str(raw_text or "")).strip()
+            if not cleaned:
+                continue
+            sentences = [
+                sentence.strip()
+                for sentence in re.split(r"(?<=[.!?])\s+", cleaned)
+                if sentence.strip()
+            ]
+            if sentences:
+                best_index = -1
+                best_score = -1
+                for index, sentence in enumerate(sentences):
+                    lowered = sentence.lower()
+                    score = 0
+                    if "deadline to apply" in lowered:
+                        score += 12
+                    if "deadline" in lowered or date_pattern.search(sentence):
+                        score += 8
+                    if "can apply" in lowered and re.search(
+                        r"\b(freshman|sophmore|sophomore|junior|senior|undergraduate|student|students)\b",
+                        lowered,
+                    ):
+                        score += 7
+                    if any(
+                        marker in lowered
+                        for marker in (
+                            "apply",
+                            "application",
+                            "applications",
+                            "eligible",
+                            "eligibility",
+                            "accepting",
+                        )
+                    ):
+                        score += 4
+                    if re.search(
+                        r"\b(undergraduate|student|students|senior)\b", lowered
+                    ):
+                        score += 3
+                    if re.search(
+                        r"\b(research|stipend|funding|grant|fellowship|internship|program)\b",
+                        lowered,
+                    ):
+                        score += 1
+                    if (
+                        re.match(r"^\d+\)", lowered)
+                        and "deadline" not in lowered
+                        and not date_pattern.search(sentence)
+                    ):
+                        score -= 3
+                    if "statement of purpose" in lowered or "which projects" in lowered:
+                        score -= 2
+                    if any(
+                        phrase in lowered
+                        for phrase in (
+                            "advice on applying",
+                            "website is terrible",
+                            "as soon as possible",
+                            "i will not be extending",
+                        )
+                    ):
+                        score -= 5
+                    if score > best_score:
+                        best_score = score
+                        best_index = index
+                if best_score > 0 and best_index >= 0:
+                    window: list[str] = []
+                    for index in range(
+                        max(0, best_index - 1), min(len(sentences), best_index + 2)
+                    ):
+                        candidate = " ".join(window + [sentences[index]]).strip()
+                        if len(candidate) > limit and window:
+                            break
+                        if len(candidate) > limit:
+                            window = [candidate[: max(40, limit - 3)].rstrip() + "..."]
+                            break
+                        window.append(sentences[index])
+                    preferred = " ".join(window).strip()
+                    if preferred:
+                        return preferred
+            if len(cleaned) <= limit:
+                return cleaned
+            return cleaned[: max(40, limit - 3)].rstrip() + "..."
+        return ""
+
+    @staticmethod
+    def _checkpoint_excerpt(hit: dict[str, Any], limit: int = 220) -> str:
+        return WebResearchAgent._evidence_focused_excerpt(
+            hit.get("content_excerpt", ""),
+            hit.get("summary", ""),
+            hit.get("snippet", ""),
+            limit=limit,
+        )
+
+    @staticmethod
+    def _task_is_opportunity_search(task: Task) -> bool:
+        lowered = str(task.description or task.name or "").lower()
+        return WebResearchAgent._text_is_opportunity_search(lowered)
+
+    @staticmethod
+    def _text_is_opportunity_search(text: str) -> bool:
+        return text_is_opportunity_search(text)
+
+    def _active_task_context_text(self, state: AgentState) -> str:
+        parts = [
+            getattr(self.config, "subtask_description", ""),
+            getattr(self.config, "success_criteria", ""),
+            state.current_focus,
+            getattr(self.config, "orchestrator_guidance", ""),
+        ]
+        return " ".join(
+            str(part or "").strip() for part in parts if str(part or "").strip()
+        )
+
+    def _active_context_is_opportunity_search(self, state: AgentState) -> bool:
+        return self._text_is_opportunity_search(self._active_task_context_text(state))
+
+    def _active_topic_anchor_terms(self, state: AgentState) -> set[str]:
+        return set(
+            derive_topic_terms(
+                self._active_task_context_text(state),
+                max_terms=6,
+                stopwords=CHECKPOINT_STOPWORDS,
+            )
+        )
+
+    @staticmethod
+    def _hit_combined_text(hit: dict[str, Any], query: str = "") -> str:
+        return " ".join(
+            str(part or "")
+            for part in (
+                query,
+                hit.get("title", ""),
+                hit.get("summary", ""),
+                hit.get("content_excerpt", ""),
+                hit.get("content", ""),
+                hit.get("url", ""),
+                hit.get("domain", ""),
+            )
+        ).lower()
+
+    @classmethod
+    def _hit_has_application_signal(cls, hit: dict[str, Any]) -> bool:
+        combined = cls._hit_combined_text(hit)
+        return any(marker in combined for marker in CHECKPOINT_APPLICATION_MARKERS)
+
+    @classmethod
+    def _hit_is_indirect_funding_announcement(cls, hit: dict[str, Any]) -> bool:
+        combined = cls._hit_combined_text(hit)
+        if any(marker in combined for marker in CHECKPOINT_NEWS_RELEASE_MARKERS):
+            return True
+        if cls._hit_has_application_signal(hit):
+            return False
+        return any(
+            re.search(pattern, combined, flags=re.IGNORECASE)
+            for pattern in CHECKPOINT_INDIRECT_FUNDING_PATTERNS
+        )
+
+    @staticmethod
+    def _checkpoint_has_strong_opportunity_signal(hit: dict[str, Any]) -> bool:
+        combined = WebResearchAgent._hit_combined_text(hit)
+        tokens = set(re.findall(r"[a-z0-9]{2,}", combined))
+        profile = build_research_task_profile(combined)
+        if WebResearchAgent._hit_is_indirect_funding_announcement(hit):
+            return False
+        if tokens.intersection(CHECKPOINT_STRONG_OPPORTUNITY_MARKERS):
+            return True
+        if any(marker in combined for marker in CHECKPOINT_DEGREE_MARKERS):
+            return False
+        if profile.target_terms and (profile.audience_terms or profile.evidence_terms):
+            return True
+        if "funding" in tokens or "award" in tokens or "awards" in tokens:
+            return bool(tokens.intersection(CHECKPOINT_PROGRAM_SUPPORT_MARKERS))
+        if "program" in tokens or "programs" in tokens:
+            return bool(profile.audience_terms or profile.evidence_terms) or bool(
+                tokens.intersection(CHECKPOINT_PROGRAM_SUPPORT_MARKERS)
+            )
+        if "opportunity" in tokens or "opportunities" in tokens:
+            return bool(profile.audience_terms or profile.evidence_terms) or bool(
+                tokens.intersection(CHECKPOINT_PROGRAM_SUPPORT_MARKERS)
+            )
+        return False
+
+    @staticmethod
+    def _checkpoint_is_degree_program_hit(hit: dict[str, Any]) -> bool:
+        combined = " ".join(
+            str(hit.get(key, "") or "")
+            for key in ("title", "summary", "content_excerpt", "snippet", "url")
+        ).lower()
+        if not any(marker in combined for marker in CHECKPOINT_DEGREE_MARKERS):
+            return False
+        return not WebResearchAgent._checkpoint_has_strong_opportunity_signal(hit)
+
+    @staticmethod
+    def _checkpoint_is_mixed_audience_hit(hit: dict[str, Any]) -> bool:
+        combined = WebResearchAgent._hit_combined_text(hit)
+        has_undergrad = any(
+            marker in combined
+            for marker in (
+                "undergraduate",
+                "undergraduates",
+                "undergrad",
+                "college student",
+                "college students",
+                "senior undergraduate",
+                "rising senior",
+            )
+        )
+        has_precollege = any(
+            marker in combined for marker in CHECKPOINT_PRECOLLEGE_MARKERS
+        )
+        if not (has_undergrad and has_precollege):
+            return False
+        return any(
+            marker in combined
+            for marker in CHECKPOINT_MIXED_AUDIENCE_PROFESSIONAL_MARKERS
+        )
+
+    def _checkpoint_hit_score(self, task: Task, query: str, hit: dict[str, Any]) -> int:
+        if hit.get("task_aligned") is False:
+            return -10
+        scope_terms = self._checkpoint_scope_terms(task)
+        title = str(hit.get("title", "") or "")
+        summary = str(hit.get("summary", "") or "")
+        excerpt = str(hit.get("content_excerpt", "") or "")
+        combined = " ".join((query, title, summary, excerpt)).lower()
+        tokens = set(re.findall(r"[a-z0-9]{2,}", combined))
+        scope_overlap = len(tokens.intersection(scope_terms))
+        opportunity_overlap = len(
+            tokens.intersection(
+                {
+                    "fellowship",
+                    "fellowships",
+                    "grant",
+                    "grants",
+                    "scholarship",
+                    "scholarships",
+                    "internship",
+                    "internships",
+                    "program",
+                    "programs",
+                    "undergraduate",
+                    "undergraduates",
+                    "student",
+                    "students",
+                    "application",
+                    "applications",
+                    "deadline",
+                    "deadlines",
+                }
+            )
+        )
+        authority = int(hit.get("authority_score", 0) or 0)
+        official = int(bool(hit.get("official_source", False)))
+        fetched = int(bool(hit.get("fetched", False)))
+        title_lower = title.lower()
+        if (
+            "arxiv" in str(hit.get("domain", "")).lower()
+            or "/abs/" in str(hit.get("url", "") or "").lower()
+        ):
+            return -10
+        if scope_overlap == 0:
+            return -5
+        if self._task_is_opportunity_search(
+            task
+        ) and self._checkpoint_is_degree_program_hit(hit):
+            return -8
+        if self._task_is_opportunity_search(
+            task
+        ) and self._hit_is_indirect_funding_announcement(hit):
+            return -8
+        if self._task_is_opportunity_search(
+            task
+        ) and not self._checkpoint_has_strong_opportunity_signal(hit):
+            return -6
+        mixed_audience_penalty = 0
+        if self._task_is_opportunity_search(
+            task
+        ) and self._checkpoint_is_mixed_audience_hit(hit):
+            mixed_audience_penalty = 5
+        if opportunity_overlap == 0 and any(
+            marker in str(task.description or "").lower()
+            for marker in (
+                "fellowship",
+                "grant",
+                "scholarship",
+                "internship",
+                "program",
+            )
+        ):
+            return -3
+        if any(marker in title_lower for marker in ("survey", "review", "paper")):
+            return -2
+        return (
+            (scope_overlap * 3)
+            + (opportunity_overlap * 3)
+            + authority
+            + (official * 2)
+            + fetched
+            - mixed_audience_penalty
+        )
+
+    def _search_hit_alignment_score(
+        self,
+        query: str,
+        hit: dict[str, Any],
+        state: AgentState,
+    ) -> int:
+        if not self._active_context_is_opportunity_search(state):
+            return int(hit.get("authority_score", 0) or 0) + int(
+                bool(hit.get("official_source", False))
+            )
+
+        if self._checkpoint_is_degree_program_hit(hit):
+            return -8
+        if self._hit_is_indirect_funding_announcement(hit):
+            return -8
+        if not self._checkpoint_has_strong_opportunity_signal(hit):
+            return -6
+
+        hit_tokens = set(re.findall(r"[a-z0-9]{2,}", self._hit_combined_text(hit)))
+        query_terms = {
+            token
+            for token in re.findall(r"[a-z0-9]{2,}", query.lower())
+            if token not in CHECKPOINT_STOPWORDS
+            and token not in {"site", "edu", "org", "gov", "com"}
+        }
+        topical_terms = {
+            token
+            for token in query_terms
+            if token
+            not in {
+                "fellowship",
+                "fellowships",
+                "grant",
+                "grants",
+                "scholarship",
+                "scholarships",
+                "program",
+                "programs",
+                "internship",
+                "internships",
+                "funding",
+                "opportunity",
+                "opportunities",
+                "undergraduate",
+                "undergraduates",
+                "student",
+                "students",
+                "us",
+                "senior",
+            }
+        }
+        if topical_terms and not hit_tokens.intersection(topical_terms):
+            return -5
+        active_topic_terms = self._active_topic_anchor_terms(state)
+        if active_topic_terms and not hit_tokens.intersection(active_topic_terms):
+            return -5
+        overlap = len(hit_tokens.intersection(query_terms))
+        if overlap == 0:
+            return -3
+        return (
+            overlap * 2
+            + len(hit_tokens.intersection(CHECKPOINT_APPLICATION_MARKERS))
+            + int(hit.get("authority_score", 0) or 0)
+            + int(bool(hit.get("official_source", False)))
+            + int(bool(hit.get("fetched", False)))
+        )
+
+    def _build_deterministic_checkpoint(self, task: Task, state: AgentState) -> str:
+        recent_entries = list(getattr(state, "search_history", []) or [])[-8:]
+        ranked_hits: list[tuple[int, dict[str, Any], str]] = []
+        for entry in recent_entries:
+            query = str(entry.get("query", "")).strip()
+            for hit in list(entry.get("results", []) or []):
+                score = self._checkpoint_hit_score(task, query, hit)
+                if score <= 0:
+                    continue
+                ranked_hits.append((score, hit, query))
+
+        ranked_hits.sort(
+            key=lambda item: (
+                item[0],
+                int(bool(item[1].get("official_source", False))),
+                int(item[1].get("authority_score", 0) or 0),
+                int(bool(item[1].get("fetched", False))),
+            ),
+            reverse=True,
+        )
+
+        if not ranked_hits:
+            recent_queries = [
+                str(entry.get("query", "")).strip()
+                for entry in recent_entries[-3:]
+                if str(entry.get("query", "")).strip()
+            ]
+            lines = ["- No primary-source-backed checkpoint evidence available yet."]
+            if recent_queries:
+                lines.append(
+                    "- Recent searches attempted: " + "; ".join(recent_queries[:3])
+                )
+            lines.append(
+                "- Continue by targeting official program pages or primary organization sites with clearer opportunity-specific queries."
+            )
+            return "\n".join(lines)
+
+        bullets: list[str] = []
+        seen_sources: set[tuple[str, str]] = set()
+        for score, hit, query in ranked_hits:
+            if self._task_is_opportunity_search(task) and not (
+                bool(hit.get("fetched", False))
+                and self._checkpoint_has_strong_opportunity_signal(hit)
+            ):
+                continue
+            title = str(hit.get("title", "")).strip() or "Untitled source"
+            domain = str(hit.get("domain", "")).strip() or "unknown"
+            url = str(hit.get("url", "")).strip()
+            key = (title.lower(), domain.lower())
+            if key in seen_sources:
+                continue
+            seen_sources.add(key)
+            excerpt = self._checkpoint_excerpt(hit)
+            evidence_text = self._hit_combined_text(hit).lower()
+            label = (
+                "Official lead"
+                if bool(hit.get("official_source", False))
+                else "Authoritative lead"
+                if int(hit.get("authority_score", 0) or 0) >= 3
+                else "Tentative discovery lead"
+            )
+            bullet = f"- {label}: {title} ({domain})"
+            if excerpt:
+                bullet += f" - Evidence: {excerpt}"
+            elif url:
+                bullet += f" - Source: {url}"
+            bullets.append(bullet)
+            if not re.search(
+                r"\b(rolling|deadline|apply|application|applications|accepting applications)\b",
+                evidence_text,
+            ):
+                bullets.append(
+                    f"- Open gap for {title}: current application timing is not directly confirmed in the retained evidence."
+                )
+            if not re.search(
+                r"\b(undergraduate|student|students|senior|freshman|sophmore|sophomore|junior)\b",
+                evidence_text,
+            ):
+                bullets.append(
+                    f"- Open gap for {title}: senior-undergraduate fit is not directly confirmed in the retained evidence."
+                )
+            if len(bullets) >= 6:
+                break
+
+        return "\n".join(bullets[:6]).strip() or (
+            "- No concrete checkpoint evidence available yet."
+        )
+
     async def _add_to_rag_async(
         self,
         task: Task,
@@ -444,6 +1070,7 @@ class WebResearchAgent(BaseResearchAgent):
             return
 
         canonical_query = self._canonicalize_query(query)
+        pathway_id = state.pathway_for_query(canonical_query)
 
         # Enhanced duplicate detection
         if (
@@ -458,13 +1085,34 @@ class WebResearchAgent(BaseResearchAgent):
         if self.tool_executor is None:
             raise RuntimeError("LangChain tool executor unavailable for search")
 
+        state.search_attempt_count += 1
         search_result = await self.tool_executor.ainvoke("search_web", {"query": query})
-        hits = search_result.get("hits", [])
+        raw_hits = list(search_result.get("hits", []) or [])
         search_time = float(search_result.get("search_time", 0.0))
+        raw_results_count = len(raw_hits)
+
+        def _filter_hits(
+            candidate_query: str, candidate_hits: list[dict[str, Any]]
+        ) -> list[dict[str, Any]]:
+            filtered_hits: list[dict[str, Any]] = []
+            opportunity_search = self._active_context_is_opportunity_search(state)
+            for raw_hit in candidate_hits:
+                hit = dict(raw_hit)
+                relevance_score = self._search_hit_alignment_score(
+                    candidate_query,
+                    hit,
+                    state,
+                )
+                hit["task_relevance_score"] = relevance_score
+                hit["task_aligned"] = relevance_score > 0
+                if opportunity_search and relevance_score <= 0:
+                    continue
+                filtered_hits.append(hit)
+            return filtered_hits
+
+        hits = _filter_hits(query, raw_hits)
 
         state.queries.add(canonical_query)
-        state.search_count += 1
-        self.metrics["total_searches"] += 1
 
         if not hits:
             relaxed_query = self._relax_query(query)
@@ -478,23 +1126,28 @@ class WebResearchAgent(BaseResearchAgent):
                     relaxed_result = await self.tool_executor.ainvoke(
                         "search_web", {"query": relaxed_query}
                     )
-                    relaxed_hits = relaxed_result.get("hits", [])
+                    state.search_attempt_count += 1
+                    relaxed_raw_hits = list(relaxed_result.get("hits", []) or [])
                     relaxed_time = float(relaxed_result.get("search_time", 0.0))
                     state.queries.add(relaxed_canonical)
-                    state.search_count += 1
-                    self.metrics["total_searches"] += 1
+                    relaxed_hits = _filter_hits(relaxed_query, relaxed_raw_hits)
                     if relaxed_hits:
                         query = relaxed_query
                         hits = relaxed_hits
                         search_time = relaxed_time
+                        raw_results_count = len(relaxed_raw_hits)
 
             if not hits:
+                state.record_pathway_attempt(pathway_id, hit=False)
+                state.zero_result_search_count += 1
                 state.search_history.append(
                     {
                         "timestamp": _now_iso(),
                         "query": query,
                         "results_count": 0,
+                        "raw_results_count": raw_results_count,
                         "search_time": search_time,
+                        "pathway_id": pathway_id,
                         "results": [],
                     }
                 )
@@ -506,12 +1159,18 @@ class WebResearchAgent(BaseResearchAgent):
         if self.config.debug:
             print(f"  Searching: {query}")
 
+        state.search_count += 1
+        state.record_pathway_attempt(pathway_id, hit=True)
+        self.metrics["total_searches"] += 1
+
         # Track search in detailed history
         search_entry = {
             "timestamp": _now_iso(),
             "query": query,
             "results_count": len(hits),
+            "raw_results_count": raw_results_count,
             "search_time": search_time,
+            "pathway_id": pathway_id,
             "results": [],
         }
 
@@ -524,6 +1183,8 @@ class WebResearchAgent(BaseResearchAgent):
             title = str(hit.get("title", ""))
             url = str(hit.get("url", "")).strip()
             snippet = str(hit.get("snippet", ""))
+            summary = str(hit.get("summary", ""))
+            content = str(hit.get("content", ""))
             domain = str(hit.get("domain", "")).strip()
             source_tier = str(hit.get("source_tier", "")).strip()
             authority_score = int(hit.get("authority_score", 0) or 0)
@@ -543,10 +1204,22 @@ class WebResearchAgent(BaseResearchAgent):
                     "title": title,
                     "url": url,
                     "fetched": bool(hit.get("fetched")),
+                    "summary": summary[:280],
+                    "content_excerpt": self._evidence_focused_excerpt(
+                        content,
+                        summary,
+                        snippet,
+                        limit=700,
+                    ),
+                    "snippet": snippet[:700],
                     "domain": domain,
                     "source_tier": source_tier,
                     "authority_score": authority_score,
                     "official_source": official_source,
+                    "task_aligned": bool(hit.get("task_aligned", True)),
+                    "task_relevance_score": int(
+                        hit.get("task_relevance_score", 0) or 0
+                    ),
                 }
             )
 
@@ -561,15 +1234,19 @@ class WebResearchAgent(BaseResearchAgent):
 
     @staticmethod
     def _canonicalize_query(query: str) -> str:
-        query = re.sub(r"[^a-zA-Z0-9\s]", " ", query.lower())
-        query = re.sub(r"\s+", " ", query).strip()
-        return query
+        return canonicalize_search_query(query)
 
     @staticmethod
     def _relax_query(query: str) -> str:
-        tokens = re.findall(r"[a-zA-Z0-9]+", query.lower())
-        if not tokens:
+        lowered = (query or "").lower()
+        site_filters = [
+            f"site:.{match.group(1)}"
+            for match in re.finditer(r"site:\.(gov|edu|org|com)\b", lowered)
+        ]
+        semantic_tokens = re.findall(r"[a-zA-Z0-9]+", normalize_research_text(lowered))
+        if not semantic_tokens and not site_filters:
             return ""
+
         stop = {
             "the",
             "a",
@@ -591,10 +1268,56 @@ class WebResearchAgent(BaseResearchAgent):
             "those",
             "2026",
         }
-        filtered = [t for t in tokens if t not in stop]
+        filtered = [t for t in semantic_tokens if t not in stop]
         if not filtered:
-            filtered = tokens
-        return " ".join(filtered[:8]).strip()
+            filtered = semantic_tokens
+
+        preserve_priority = list(
+            dict.fromkeys(
+                derive_topic_terms(query, max_terms=4)
+                + [
+                    "undergraduate",
+                    "undergraduates",
+                    "student",
+                    "students",
+                    "fellowship",
+                    "fellowships",
+                    "grant",
+                    "grants",
+                    "scholarship",
+                    "scholarships",
+                    "internship",
+                    "internships",
+                    "funding",
+                    "deadline",
+                    "eligibility",
+                ]
+            )
+        )
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        for token in site_filters:
+            if token not in seen:
+                seen.add(token)
+                ordered.append(token)
+
+        for token in preserve_priority:
+            if token in filtered and token not in seen:
+                seen.add(token)
+                ordered.append(token)
+
+        for token in filtered:
+            if token not in seen and token not in {"site", "gov", "edu", "org", "com"}:
+                seen.add(token)
+                ordered.append(token)
+
+        if not ordered:
+            return ""
+
+        max_terms = 8 if site_filters else 7
+        return " ".join(ordered[:max_terms]).strip()
 
     async def _handle_mcp_tool_action(self, plan: dict, state: AgentState):
         """Handle MCP tool action"""
@@ -740,77 +1463,8 @@ class WebResearchAgent(BaseResearchAgent):
         """Create a checkpoint summarizing current progress"""
         if self.config.debug:
             print(f"[CHECKPOINT] Creating checkpoint at action {state.action_count}")
-
-        # Gather recent context
-        recent_context = "\n".join(state.history)
-
-        # Replace URLs with flags in context
-        # Process all texts to build up the flag manager's complete mapping
-        recent_context_with_flags, _ = self.url_flag_manager.replace_urls_with_flags(
-            recent_context
-        )
-        previous_checkpoint_with_flags = ""
-        if state.last_checkpoint:
-            prev_with_flags, _ = self.url_flag_manager.replace_urls_with_flags(
-                state.last_checkpoint
-            )
-            previous_checkpoint_with_flags = prev_with_flags
-
-        # Get the complete flag mapping after processing all texts
-        flag_mapping = self.url_flag_manager.flag_to_url.copy()
-        url_table = self.url_flag_manager.get_url_reference_table()
-
-        if self.report_chains is None:
-            raise RuntimeError("LangChain report chains are required for checkpoints")
-        self.metrics["total_llm_calls"] += 1
-        llm_step_timeout_seconds = _env_timeout_seconds(
-            "AGENT_LLM_STEP_TIMEOUT_SECONDS",
-            "45",
-        )
         checkpoint_used_fallback = False
-        try:
-            checkpoint_call = self.report_chains.acreate_checkpoint(
-                task_description=task.description,
-                recent_context_with_flags=recent_context_with_flags,
-                previous_checkpoint_with_flags=previous_checkpoint_with_flags,
-                url_reference_table=url_table,
-            )
-            if llm_step_timeout_seconds is None:
-                checkpoint_with_flags = await checkpoint_call
-            else:
-                checkpoint_with_flags = await asyncio.wait_for(
-                    checkpoint_call,
-                    timeout=llm_step_timeout_seconds,
-                )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Checkpoint generation timed out for task %s after %.1fs; using fallback checkpoint",
-                task.name,
-                llm_step_timeout_seconds,
-            )
-            checkpoint_used_fallback = True
-            checkpoint_with_flags = (
-                recent_context_with_flags[-1200:]
-                if recent_context_with_flags
-                else "Checkpoint fallback: no recent context available."
-            )
-        except Exception as e:
-            logger.warning(
-                "Checkpoint generation failed for task %s: %s; using fallback checkpoint",
-                task.name,
-                e,
-            )
-            checkpoint_used_fallback = True
-            checkpoint_with_flags = (
-                recent_context_with_flags[-1200:]
-                if recent_context_with_flags
-                else "Checkpoint fallback: no recent context available."
-            )
-
-        # Replace flags back with URLs
-        checkpoint = self.url_flag_manager.replace_flags_with_urls(
-            checkpoint_with_flags, flag_mapping
-        )
+        checkpoint = self._build_deterministic_checkpoint(task, state)
         checkpoint = self._sanitize_intermediate_note(
             checkpoint,
             default_prefix="- No concrete checkpoint evidence available yet.",
@@ -1080,7 +1734,7 @@ class WebResearchAgent(BaseResearchAgent):
         raw_final_timeout_seconds = float(
             os.getenv("AGENT_SUBTASK_FINAL_REPORT_TIMEOUT_SECONDS", "180")
         )
-        if _timeouts_disabled():
+        if timeouts_disabled():
             raw_final_timeout_seconds = 0.0
         try:
             if raw_final_timeout_seconds <= 0:
